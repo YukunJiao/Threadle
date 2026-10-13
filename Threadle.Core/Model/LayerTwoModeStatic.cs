@@ -65,11 +65,11 @@ namespace Threadle.Core.Model
 
 
         #region Constructors
-        private LayerTwoModeStatic(string name, string[] hyperedgeNames, int[] offsetsHyperedges, uint[] hyperedgesNodeIdsFlat, Dictionary<uint,int> nodeIdToIndexMapper, int[] offsetsNodeIds, int[] nodeIdHyperedgesFlat)
+        private LayerTwoModeStatic(string name, string[] hyperedgeNames, int[] offsetsHyperedges, uint[] hyperedgesNodeIdsFlat, Dictionary<uint, int> nodeIdToIndexMapper, int[] offsetsNodeIds, int[] nodeIdHyperedgesFlat)
         {
             Name = name;
-            _hyperedgeNames= hyperedgeNames;
-            _offsetsHyperedges= offsetsHyperedges;
+            _hyperedgeNames = hyperedgeNames;
+            _offsetsHyperedges = offsetsHyperedges;
             _hyperedgeNodeIdsFlat = hyperedgesNodeIdsFlat;
             _nodeIdToIndexMapper = nodeIdToIndexMapper;
             _offsetsNodeIds = offsetsNodeIds;
@@ -463,7 +463,7 @@ namespace Threadle.Core.Model
                 for (int j = _offsetsHyperedges[h]; j < _offsetsHyperedges[h + 1]; j++)
                     if (_hyperedgeNodeIdsFlat[j] != nodeId)
                         newHyperedgeNodeIds.Add(_hyperedgeNodeIdsFlat[j]);
-                
+
             }
             newOffsetHyperedges[_hyperedgeNames.Length] = newHyperedgeNodeIds.Count;
 
@@ -578,6 +578,18 @@ namespace Threadle.Core.Model
             for (int j = 0; j < end - start; j++)
                 result[j] = _hyperedgeNames[_nodeIdHyperedgesFlat[start + j]];
             return result;
+        }
+
+        public IEnumerable<(string hypername, ReadOnlyMemory<uint> nodeIds)> GetNodeHyperedgesWithMembers(uint nodeId)
+        {
+            if (!_nodeIdToIndexMapper.TryGetValue(nodeId, out int nodeIndex))
+                yield break;
+            for (int i = _offsetsNodeIds[nodeIndex]; i < _offsetsNodeIds[nodeIndex + 1]; i++)
+            {
+                int h = _nodeIdHyperedgesFlat[i];
+                // No copying: a slice of the flat array of hyperedge members
+                yield return (_hyperedgeNames[h], new ReadOnlyMemory<uint>(_hyperedgeNodeIdsFlat, _offsetsHyperedges[h], _offsetsHyperedges[h + 1] - _offsetsHyperedges[h]));
+            }
         }
 
         public IEnumerable<(string hypername, uint[] nodeIds)> GetAllHyperedgeData()

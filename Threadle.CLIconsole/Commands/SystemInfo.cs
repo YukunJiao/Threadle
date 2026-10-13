@@ -48,7 +48,7 @@ namespace Threadle.CLIconsole.Commands
             };
 
             return CommandResult.Ok(
-                message: $"System has {Environment.ProcessorCount} logical processor core(s) available. Current 'maxthreads' setting: {(UserSettings.MaxDegreeOfParallelism == -1 ? "unconstrained" : UserSettings.MaxDegreeOfParallelism.ToString())}. Highest allowed 'maxthreads': {UserSettings.EffectiveMaxThreadsLimit}{(UserSettings.MaxThreadsLimit == -1 ? "" : $" (limited by 'maxthreadslimit' in {AppConfig.LoadedPath})")}.",
+                message: $"System has {Environment.ProcessorCount} logical processor core(s) available. Current 'maxthreads' setting: {(UserSettings.MaxDegreeOfParallelism == -1 ? "unconstrained" : UserSettings.MaxDegreeOfParallelism.ToString())}. Highest allowed 'maxthreads': {UserSettings.EffectiveMaxThreadsLimit}{(UserSettings.MaxThreadsLimit == -1 ? "" : $" (limited by 'maxthreadslimit' in configuration file)")}.",
                 payload: info
                 );
         }
