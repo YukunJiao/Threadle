@@ -116,10 +116,27 @@ Ensure that:
 - **Threadle.CLIconsole** is set as the Startup Project in the Solution explorer.
 - **Threadle.Core** is listed under `Threadle.CLIconsole -> Dependencies -> Projects`.
 
-## 7. NOTES
+## 7. OPTIONAL CONFIGURATION FILE (appconfig.json)
+At startup, Threadle looks for a file named `appconfig.json` in the same folder as the Threadle executable, and applies its settings if it exists. This makes it possible for e.g. system administrators to set limits that apply wherever and however Threadle is started (including via threadleR). If the file does not exist, Threadle starts with its built-in defaults.
+
+```json
+{
+  // Highest value that the 'maxthreads' setting can be set to (-1 = no limit other than the number of cores)
+  "maxthreadslimit": 8,
+  // Value of the 'maxthreads' setting at startup (-1 = unconstrained, or 'maxthreadslimit' if that is set)
+  "defaultmaxthreads": 4
+}
+```
+
+- Both settings default to -1, and must be -1 or a positive integer.
+- If `maxthreadslimit` is set, `setting(maxthreads, ...)` cannot exceed it, and `setting(maxthreads, -1)` sets it to `maxthreadslimit`.
+- Comments and trailing commas are allowed. Invalid entries, or a file that cannot be read, result in a warning (on STDERR) and are ignored.
+- Use `systeminfo()` to see the current `maxthreads` setting, the highest value allowed, and which configuration file (if any) was loaded.
+- If the executable is placed in a folder where ordinary users lack write access, only administrators can change the file. Note that this is not a security control: a user who copies the executable elsewhere also leaves the file behind.
+
+## 8. NOTES
 - Threadle is fully cross-platform: it compiles and runs on Windows, Linux, and macOS.
 - Ensure that the .NET SDK is correctly installed and available in your system PATH before building or running.
-
 
 
 
