@@ -112,8 +112,36 @@ namespace Threadle.Core.Processing
         }
 
         /// <summary>
-        /// Merges two 1-mode layers into a new layer by the provided method, storing the result under
-        /// the provided name. Note that merging creates a new layer, without modifying either source layer.
+        /// Merges two layers of the same mode into a new layer of that mode, storing the result under the
+        /// provided name. Merging creates a new layer, without modifying either source layer. A 1-mode
+        /// layer cannot be merged with a 2-mode layer.
+        /// Two 1-mode layers are merged pairwise on their ties (see <see cref="MergeOneModeLayers"/>), and two
+        /// 2-mode layers are merged on their hyperedges, matched by name (see <see cref="MergeTwoModeLayers"/>).
+        /// If no method is provided, Max is used for 1-mode layers and Or for 2-mode layers.
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="layerName1">The name of the first layer to merge.</param>
+        /// <param name="layerName2">The name of the second layer to merge.</param>
+        /// <param name="method">The <see cref="MergeMethod"/> to use, or null for the default of the layers' mode.</param>
+        /// <param name="newLayerName">The name of the new layer to store the merged data in.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public static OperationResult MergeLayers(Network network, string layerName1, string layerName2, MergeMethod? method, string newLayerName)
+        {
+            if (!network.Layers.TryGetValue(layerName1, out var layerA))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName1}' does not exist in network '{network.Name}'.");
+            if (!network.Layers.TryGetValue(layerName2, out var layerB))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName2}' does not exist in network '{network.Name}'.");
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+            if (layerA is ILayerOneMode oneModeA && layerB is ILayerOneMode oneModeB)
+                return MergeOneModeLayers(network, layerName1, oneModeA, layerName2, oneModeB, method ?? MergeMethod.Max, newLayerName);
+            if (layerA is ILayerTwoMode twoModeA && layerB is ILayerTwoMode twoModeB)
+                return MergeTwoModeLayers(network, layerName1, twoModeA, layerName2, twoModeB, method ?? MergeMethod.Or, newLayerName);
+            return OperationResult.Fail("MismatchedLayerTypes", $"Layer '{layerName1}' and '{layerName2}' are of different modes (one is 1-mode, the other 2-mode): only layers of the same mode can be merged.");
+        }
+
+        /// <summary>
+        /// Merges two 1-mode layers into a new 1-mode layer by the provided method.
         /// Both source layers must share the same directionality (both directed or both undirected) —
         /// symmetrize the directed one first with <see cref="SymmetrizeLayer"/> if they don't match.
         /// The method fully determines the resulting layer's edge type: And/Or/Xor always produce a
@@ -122,27 +150,11 @@ namespace Threadle.Core.Processing
         /// otherwise. For binary source layers, And is equivalent to Product and Or is equivalent to Max;
         /// Xor (true iff exactly one source layer has the tie) is not expressible via the other methods.
         /// </summary>
-        /// <param name="network">The Network object.</param>
-        /// <param name="layerName1">The name of the first 1-mode layer to merge.</param>
-        /// <param name="layerName2">The name of the second 1-mode layer to merge.</param>
-        /// <param name="method">The <see cref="MergeMethod"/> to use when combining edge values.</param>
-        /// <param name="newLayerName">The name of the new layer to store the merged data in.</param>
-        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
-        public static OperationResult MergeLayers(Network network, string layerName1, string layerName2, MergeMethod method, string newLayerName)
+        private static OperationResult MergeOneModeLayers(Network network, string layerName1, ILayerOneMode oneModeA, string layerName2, ILayerOneMode oneModeB, MergeMethod method, string newLayerName)
         {
-            if (!network.Layers.TryGetValue(layerName1, out var layerA))
-                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName1}' does not exist in network '{network.Name}'.");
-            if (!network.Layers.TryGetValue(layerName2, out var layerB))
-                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName2}' does not exist in network '{network.Name}'.");
-            if (!(layerA is ILayerOneMode oneModeA))
-                return OperationResult.Fail("InvalidLayerType", $"Layer '{layerName1}' is not a 1-mode layer.");
-            if (!(layerB is ILayerOneMode oneModeB))
-                return OperationResult.Fail("InvalidLayerType", $"Layer '{layerName2}' is not a 1-mode layer.");
             if (oneModeA.IsSymmetric != oneModeB.IsSymmetric)
                 return OperationResult.Fail("MismatchedDirectionality",
                     $"Layer '{layerName1}' and '{layerName2}' have different directionality (one is directed, the other undirected). Symmetrize the directed layer first with symmetrizelayer().");
-            if (network.Layers.ContainsKey(newLayerName))
-                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
 
             bool bothBinary = oneModeA.IsBinary && oneModeB.IsBinary;
             bool outputBinary = method switch
@@ -190,6 +202,43 @@ namespace Threadle.Core.Processing
             newLayer._deduplicateEdgesets();
             network.AddLayer(newLayerName, newLayer);
             return OperationResult.Ok($"Merged layers '{layerName1}' and '{layerName2}' via {method} and stored the result as new layer '{newLayerName}', all in network '{network.Name}'.");
+        }
+
+        /// <summary>
+        /// Merges two 2-mode layers into a new 2-mode layer, matching hyperedges by name. Only And and Or
+        /// are valid methods. Or (union): every hyperedge that exists in either layer is included, and a
+        /// hyperedge that exists in both gets the union of its nodes in the two layers. And (intersection):
+        /// only hyperedges that exist in both layers are included, each with the nodes it has in both layers
+        /// (a shared hyperedge with no nodes in common is kept, but without nodes).
+        /// </summary>
+        private static OperationResult MergeTwoModeLayers(Network network, string layerName1, ILayerTwoMode twoModeA, string layerName2, ILayerTwoMode twoModeB, MergeMethod method, string newLayerName)
+        {
+            if (method != MergeMethod.And && method != MergeMethod.Or)
+                return OperationResult.Fail("InvalidMergeMethod", $"Method '{method}' cannot be used for merging 2-mode layers: use 'and' (intersection) or 'or' (union).");
+
+            // Index layer B's hyperedges by name once: static layers lack a fast name lookup.
+            var hyperedgesB = new Dictionary<string, uint[]>();
+            foreach (var (hyperName, nodeIds) in twoModeB.GetAllHyperedgeData())
+                hyperedgesB[hyperName] = nodeIds;
+
+            LayerTwoMode newLayer = new LayerTwoMode(newLayerName);
+            foreach (var (hyperName, nodeIdsA) in twoModeA.GetAllHyperedgeData())
+            {
+                if (hyperedgesB.Remove(hyperName, out var nodeIdsB))
+                {
+                    var merged = method == MergeMethod.Or ? nodeIdsA.Union(nodeIdsB) : nodeIdsA.Intersect(nodeIdsB);
+                    newLayer._addHyperedge(hyperName, [.. merged.Order()]);
+                }
+                else if (method == MergeMethod.Or)
+                    newLayer._addHyperedge(hyperName, [.. nodeIdsA.Distinct().Order()]);
+            }
+            // Whatever remains in hyperedgesB only exists in layer B.
+            if (method == MergeMethod.Or)
+                foreach (var (hyperName, nodeIdsB) in hyperedgesB)
+                    newLayer._addHyperedge(hyperName, [.. nodeIdsB.Distinct().Order()]);
+
+            network.AddLayer(newLayerName, newLayer);
+            return OperationResult.Ok($"Merged 2-mode layers '{layerName1}' and '{layerName2}' via {method} ({(method == MergeMethod.Or ? "union" : "intersection")} of hyperedges, matched by name) and stored the result as new 2-mode layer '{newLayerName}' with {newLayer.NbrHyperedges} hyperedges, all in network '{network.Name}'.");
         }
 
 

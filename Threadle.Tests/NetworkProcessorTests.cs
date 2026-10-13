@@ -402,14 +402,121 @@ public class NetworkProcessorTests
     }
 
     [Fact]
-    public void MergeLayers_WrongLayerType_Fails()
+    public void MergeLayers_OneModeWithTwoMode_Fails()
     {
         var net = new Network("net", MakeNodeset());
         net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
         net.AddLayerTwoMode("clubs");
         var result = NetworkProcessor.MergeLayers(net, "a", "clubs", MergeMethod.Or, "merged");
         Assert.False(result.Success);
-        Assert.Equal("InvalidLayerType", result.Code);
+        Assert.Equal("MismatchedLayerTypes", result.Code);
+        Assert.False(net.Layers.ContainsKey("merged"));
+    }
+
+    private static Network MakeTwoModeMergeNetwork()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerTwoMode("x");
+        net.AddLayerTwoMode("y");
+        net.AddHyperedge("x", "shared", [1, 2, 3]);
+        net.AddHyperedge("x", "onlyX", [4, 5]);
+        net.AddHyperedge("y", "shared", [3, 4]);
+        net.AddHyperedge("y", "onlyY", [1]);
+        return net;
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_Or_UnionOfHyperedgesAndNodes()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        Assert.True(result.Success);
+        var merged = Assert.IsType<LayerTwoMode>(net.Layers["merged"]);
+        Assert.Equal(3u, merged.NbrHyperedges);
+        Assert.Equal(new uint[] { 1, 2, 3, 4 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(new uint[] { 4, 5 }, merged.GetHyperedgeNodeIds("onlyX"));
+        Assert.Equal(new uint[] { 1 }, merged.GetHyperedgeNodeIds("onlyY"));
+        Assert.Equal(new[] { "onlyY", "shared" }, merged.GetNodeHyperedgeNames(1).Order());
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_And_IntersectionOfHyperedgesAndNodes()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.And, "merged");
+        Assert.True(result.Success);
+        var merged = Assert.IsType<LayerTwoMode>(net.Layers["merged"]);
+        Assert.Equal(1u, merged.NbrHyperedges);
+        Assert.Equal(new uint[] { 3 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.False(merged.ContainsHyperedge("onlyX"));
+        Assert.False(merged.ContainsHyperedge("onlyY"));
+        Assert.Empty(merged.GetNodeHyperedgeNames(1));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_And_SharedHyperedgeWithoutCommonNodes_KeptEmpty()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerTwoMode("x");
+        net.AddLayerTwoMode("y");
+        net.AddHyperedge("x", "h", [1, 2]);
+        net.AddHyperedge("y", "h", [3]);
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.And, "merged");
+        Assert.True(result.Success);
+        var merged = (ILayerTwoMode)net.Layers["merged"];
+        Assert.True(merged.ContainsHyperedge("h"));
+        Assert.Empty(merged.GetHyperedgeNodeIds("h"));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_DefaultMethod_IsOr()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", null, "merged");
+        Assert.True(result.Success);
+        Assert.Equal(3u, ((ILayerTwoMode)net.Layers["merged"]).NbrHyperedges);
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_StaticLayers_Merged()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        net.Layers["x"] = LayerTwoModeStatic.FromDynamic((LayerTwoMode)net.Layers["x"]);
+        net.Layers["y"] = LayerTwoModeStatic.FromDynamic((LayerTwoMode)net.Layers["y"]);
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        Assert.True(result.Success);
+        var merged = (ILayerTwoMode)net.Layers["merged"];
+        Assert.Equal(new uint[] { 1, 2, 3, 4 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(3u, merged.NbrHyperedges);
+    }
+
+    [Theory]
+    [InlineData(MergeMethod.Xor)]
+    [InlineData(MergeMethod.Sum)]
+    [InlineData(MergeMethod.Average)]
+    [InlineData(MergeMethod.Max)]
+    [InlineData(MergeMethod.Min)]
+    [InlineData(MergeMethod.Product)]
+    public void MergeLayers_TwoMode_InvalidMethod_Fails(MergeMethod method)
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", method, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("InvalidMergeMethod", result.Code);
+        Assert.False(net.Layers.ContainsKey("merged"));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_SourceLayersUnchanged()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        var x = (ILayerTwoMode)net.Layers["x"];
+        var y = (ILayerTwoMode)net.Layers["y"];
+        Assert.Equal(new uint[] { 1, 2, 3 }, x.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(new uint[] { 3, 4 }, y.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(2u, x.NbrHyperedges);
+        Assert.Equal(2u, y.NbrHyperedges);
     }
 
     [Fact]
