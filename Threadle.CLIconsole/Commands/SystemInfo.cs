@@ -19,7 +19,7 @@ namespace Threadle.CLIconsole.Commands
         /// <summary>
         /// Gets a human-readable description of what the command does.
         /// </summary>
-        public string Description => "Displays details about the system Threadle is running on, including the number of available processor cores, OS and process architecture, .NET runtime version, and the current 'maxthreads' setting. Useful for deciding what value to give the 'maxthreads' setting (see 'setting()').";
+        public string Description => "Displays details about the system Threadle is running on, including the number of available processor cores, OS and process architecture, .NET runtime version, the current 'maxthreads' setting, and the highest value it can be set to (the number of cores, or lower if limited by 'maxthreadslimit' in the appconfig.json file next to the Threadle executable). Useful for deciding what value to give the 'maxthreads' setting (see 'setting()').";
 
         /// <summary>
         /// Gets a value indicating whether this command produces output that must be assigned to a variable.
@@ -37,6 +37,8 @@ namespace Threadle.CLIconsole.Commands
             {
                 ["ProcessorCount"] = Environment.ProcessorCount,
                 ["MaxThreadsSetting"] = UserSettings.MaxDegreeOfParallelism,
+                ["MaxThreadsLimit"] = UserSettings.EffectiveMaxThreadsLimit,
+                ["AppConfigFile"] = AppConfig.LoadedPath ?? "none",
                 ["OSDescription"] = RuntimeInformation.OSDescription,
                 ["OSArchitecture"] = RuntimeInformation.OSArchitecture.ToString(),
                 ["ProcessArchitecture"] = RuntimeInformation.ProcessArchitecture.ToString(),
@@ -46,7 +48,7 @@ namespace Threadle.CLIconsole.Commands
             };
 
             return CommandResult.Ok(
-                message: $"System has {Environment.ProcessorCount} logical processor core(s) available. Current 'maxthreads' setting: {(UserSettings.MaxDegreeOfParallelism == -1 ? "unconstrained" : UserSettings.MaxDegreeOfParallelism.ToString())}.",
+                message: $"System has {Environment.ProcessorCount} logical processor core(s) available. Current 'maxthreads' setting: {(UserSettings.MaxDegreeOfParallelism == -1 ? "unconstrained" : UserSettings.MaxDegreeOfParallelism.ToString())}. Highest allowed 'maxthreads': {UserSettings.EffectiveMaxThreadsLimit}{(UserSettings.MaxThreadsLimit == -1 ? "" : $" (limited by 'maxthreadslimit' in {AppConfig.LoadedPath})")}.",
                 payload: info
                 );
         }
