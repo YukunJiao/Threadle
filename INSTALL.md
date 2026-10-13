@@ -20,11 +20,11 @@ Although Threadle.Core can be used independently (e.g., for integration with oth
 
 ## 1. DEPENDENCIES
 To build Threadle from source, you need:
-- **.NET 8.0 SDK or later**  
+- **.NET 10.0 SDK or later**  
   Download from: https://dotnet.microsoft.com/download
 
 Optional (Windows only):
-- **Visual Studio 2022** (Community Edition or higher), which includes the .NET SDK.
+- **Visual Studio 2026** (Community Edition or higher), which includes the .NET 10 SDK. (Visual Studio 2022 does not support .NET 10.)
 
 ## 2. GETTING THE SOURCE CODE
 Clone the repository:
@@ -46,7 +46,7 @@ dotnet build -c Release
 ```
 Binaries will be in:
 ```bash
-bin/Release/net8.0/
+bin/Release/net10.0/
 ```
 ### Build in Debug mode:
 ```bash
@@ -54,7 +54,7 @@ dotnet build -c Debug
 ```
 Binaries will be in:
 ```bash
-bin/Debug/net8.0/
+bin/Debug/net10.0/
 ```
 ## 4. RUNNING THE APPLICATION
 You can run Threadle directly using the .NET CLI:
@@ -87,7 +87,7 @@ dotnet publish Threadle.CLIconsole -c Release -r osx-x64 --self-contained true -
 ```
 Output will be located in:
 ```bash
-bin/Release/net8.0/<RID>/publish/
+bin/Release/net10.0/<RID>/publish/
 ```
 ...where <RID> is the runtime identifier (e.g., `win-x64`, `linux-x64`, `osx-x64`).
 
@@ -111,7 +111,7 @@ Windows users may alternatively open the solution file:
 ```bash
 Threadle.sln
 ```
-From Visual Studio 2022, you can build, run, and publish directly from the IDE.
+From Visual Studio 2026, you can build, run, and publish directly from the IDE.
 Ensure that:
 - **Threadle.CLIconsole** is set as the Startup Project in the Solution explorer.
 - **Threadle.Core** is listed under `Threadle.CLIconsole -> Dependencies -> Projects`.
