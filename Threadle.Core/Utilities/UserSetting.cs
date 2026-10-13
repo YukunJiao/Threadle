@@ -30,11 +30,19 @@
 
         /// <summary>
         /// Setting for the maximum number of threads that parallelized methods (e.g. betweenness centrality)
-        /// are allowed to use concurrently. -1 (the default) means unconstrained, i.e. .NET decides based on
-        /// the number of available cores. Any other value must be a positive integer no greater than
-        /// Environment.ProcessorCount, capping the number of threads used, e.g. to leave cores free for other work.
+        /// are allowed to use concurrently (the 'maxthreads' setting). -1 (the default) means unconstrained,
+        /// i.e. .NET decides based on the number of available cores. Any other value must be a positive
+        /// integer no greater than Environment.ProcessorCount, nor greater than <see cref="MaxThreadsLimit"/>
+        /// if that is set. Its value at startup can be set with 'defaultmaxthreads' in appconfig.json.
         /// </summary>
         public static int MaxDegreeOfParallelism { get; set; } = -1;
+
+        /// <summary>
+        /// Limit for the 'maxthreads' setting, set by 'maxthreadslimit' in appconfig.json (see <see cref="AppConfig"/>).
+        /// -1 (the default) means no limit other than the number of available processor cores.
+        /// When a limit is set, 'maxthreads' cannot be set above it, and setting 'maxthreads' to -1 uses the limit.
+        /// </summary>
+        public static int MaxThreadsLimit { get; set; } = -1;
         #endregion
 
 
@@ -75,7 +83,13 @@
                         return OperationResult.Fail("InvalidValue", "Setting 'maxthreads' must be -1 (unconstrained) or a positive integer.");
                     if (maxThreadsValue > Environment.ProcessorCount)
                         return OperationResult.Fail("InvalidValue", $"Setting 'maxthreads' ({maxThreadsValue}) exceeds the number of available processor cores ({Environment.ProcessorCount}). Use 'systeminfo()' to check available cores.");
-
+                    if (MaxThreadsLimit != -1 && maxThreadsValue > MaxThreadsLimit)
+                        return OperationResult.Fail("InvalidValue", $"Setting 'maxthreads' ({maxThreadsValue}) exceeds the limit ({MaxThreadsLimit}) set by 'maxthreadslimit' in {AppConfig.FileName}.");
+                    if (maxThreadsValue == -1 && MaxThreadsLimit != -1)
+                    {
+                        MaxDegreeOfParallelism = EffectiveMaxThreadsLimit;
+                        return OperationResult.Ok($"Setting 'maxthreads' to {MaxDegreeOfParallelism}, the limit set by 'maxthreadslimit' in {AppConfig.FileName}.");
+                    }
                     MaxDegreeOfParallelism = maxThreadsValue;
                     break;
 
@@ -84,6 +98,12 @@
             }
             return OperationResult.Ok($"Setting '{key}' to {value}.");
         }
+
+        /// <summary>
+        /// The highest value that 'maxthreads' can currently be set to: the number of available processor
+        /// cores, or <see cref="MaxThreadsLimit"/> if that is set and lower.
+        /// </summary>
+        public static int EffectiveMaxThreadsLimit => MaxThreadsLimit == -1 ? Environment.ProcessorCount : Math.Min(MaxThreadsLimit, Environment.ProcessorCount);
 
         /// <summary>
         /// Builds a <see cref="System.Threading.Tasks.ParallelOptions"/> instance reflecting the current
