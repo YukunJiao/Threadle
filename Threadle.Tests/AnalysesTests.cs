@@ -3019,6 +3019,56 @@ public class AnalysesTests
     }
 
     [Fact]
+    public void Constraint_LayerAllowsSelfties_FailsEvenWithoutAnySelfLoopEdge()
+    {
+        // Burt's constraint has no defined treatment of a self-tie, so a layer where selfties
+        // are merely allowed is refused outright - the check is on the layer's type, not its data.
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.Constraint(net, new[] { "layer" }, "con");
+        Assert.False(result.Success);
+        Assert.Equal("LayerAllowsSelfties", result.Code);
+    }
+
+    [Fact]
+    public void Constraint_AllLayers_RefusesIfAnyAllowsSelfties()
+    {
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.Constraint(net, null, "con");
+        Assert.False(result.Success);
+        Assert.Equal("LayerAllowsSelfties", result.Code);
+    }
+
+    [Fact]
+    public void EffectiveSize_LayerAllowsSelfties_FailsEvenWithoutAnySelfLoopEdge()
+    {
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.EffectiveSize(net, new[] { "layer" }, "es");
+        Assert.False(result.Success);
+        Assert.Equal("LayerAllowsSelfties", result.Code);
+    }
+
+    [Fact]
+    public void EffectiveSize_AllLayers_RefusesIfAnyAllowsSelfties()
+    {
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.EffectiveSize(net, null, "es");
+        Assert.False(result.Success);
+        Assert.Equal("LayerAllowsSelfties", result.Code);
+    }
+
+    [Fact]
     public void ConstraintEffectiveSize_MaxThreadsOneVsMany_ProduceSameValues()
     {
         if (Environment.ProcessorCount < 2)
