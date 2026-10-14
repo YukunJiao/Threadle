@@ -650,6 +650,8 @@ namespace Threadle.Core.Utilities
                 foreach (int nodeIndex in hyperedge.NodeIndices)
                     layers[l]!._addAffiliation(nodeIds[nodeIndex], name);
             }
+            foreach (var layer in layers)
+                layer?._deduplicateHyperedges();
         }
         #endregion
 

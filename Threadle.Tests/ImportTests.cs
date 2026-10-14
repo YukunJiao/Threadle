@@ -254,6 +254,25 @@ public class ImportTests : IDisposable
     }
 
     [Fact]
+    public void ImportTwoModeEdgelist_DuplicateRow_MembershipNotDuplicated()
+    {
+        // The same (node, affiliation) pair appears twice (e.g. a duplicate source row): the
+        // unchecked _addAffiliation() path used by the importer doesn't check for this itself,
+        // so the post-import dedup pass must catch it.
+        var net = EmptyNetwork();
+        net.AddLayerTwoMode("clubs");
+        string path = WriteTempFile("1\tchess", "1\tchess", "2\tchess");
+
+        var result = FileManager.ImportTwoModeEdgeList(path, net, (LayerTwoMode)net.Layers["clubs"], 0, 1, false, '\t', true);
+
+        Assert.True(result.Success, result.Message);
+        var chess = net.GetHyperedgeNodes("clubs", "chess").Value!;
+        Assert.Equal(2, chess.Length);
+        Assert.Contains(1u, chess);
+        Assert.Contains(2u, chess);
+    }
+
+    [Fact]
     public void ImportTwoModeMatrix_Labels()
     {
         var net = EmptyNetwork();

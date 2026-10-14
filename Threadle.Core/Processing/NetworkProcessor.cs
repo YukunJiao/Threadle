@@ -516,23 +516,32 @@ namespace Threadle.Core.Processing
             if (network.Layers.ContainsKey(newLayerName))
                 return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
 
+            // A hyperedge's membership is conceptually a set; a duplicate node id within one
+            // (which shouldn't occur, but importers aren't all guaranteed to de-duplicate) would
+            // otherwise create a spurious self-loop and inflate the weight/count of a real edge.
             Dictionary<(uint, uint), float> projectedEdges = [];
             if (method == ProjectionMethod.Count || method == ProjectionMethod.Newman)
-                foreach ((string hypername, uint[] nodeIds) in originalLayer.GetAllHyperedgeData())
+                foreach ((string hypername, uint[] rawNodeIds) in originalLayer.GetAllHyperedgeData())
+                {
+                    uint[] nodeIds = rawNodeIds.Distinct().ToArray();
                     for (int i = 0; i < nodeIds.Length; i++)
                         for (int j = i + 1; j < nodeIds.Length; j++)
                         {
                             var key = (Math.Min(nodeIds[i], nodeIds[j]), Math.Max(nodeIds[i], nodeIds[j]));
                             projectedEdges[key] = projectedEdges.GetValueOrDefault(key) + 1f / (method == ProjectionMethod.Count ? 1f : (nodeIds.Length - 1));
                         }
+                }
             else if (method == ProjectionMethod.Binary)
-                foreach ((string hypername, uint[] nodeIds) in originalLayer.GetAllHyperedgeData())
+                foreach ((string hypername, uint[] rawNodeIds) in originalLayer.GetAllHyperedgeData())
+                {
+                    uint[] nodeIds = rawNodeIds.Distinct().ToArray();
                     for (int i = 0; i < nodeIds.Length; i++)
                         for (int j = i + 1; j < nodeIds.Length; j++)
                         {
                             var key = (Math.Min(nodeIds[i], nodeIds[j]), Math.Max(nodeIds[i], nodeIds[j]));
                             projectedEdges.TryAdd(key, 1f);
                         }
+                }
 
             LayerOneMode newLayer = new LayerOneMode(newLayerName, EdgeDirectionality.Undirected, (method == ProjectionMethod.Binary) ? EdgeType.Binary : EdgeType.Valued, false);
             foreach (var ((node1, node2), value) in projectedEdges)

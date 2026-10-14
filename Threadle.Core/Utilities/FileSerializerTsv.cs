@@ -218,6 +218,11 @@ namespace Threadle.Core.Utilities
                         new LayerTwoMode { Name = pendingName };
                 if (currentLayer!=null)
                 {
+                    // _addHyperedge() (used below while parsing) trusts the file's node list as
+                    // given, so a duplicate node id on one row needs cleaning up before the layer
+                    // is packed/stored.
+                    if (currentLayer is LayerTwoMode layerTwoModeToFlush)
+                        layerTwoModeToFlush._deduplicateHyperedges();
                     collectedLayers.Add(currentLayer.Name, compactLayers ? Misc.PackLayer(currentLayer) : currentLayer);
                     currentLayer = null;
                 }
@@ -332,7 +337,17 @@ namespace Threadle.Core.Utilities
                         continue;
                     string hyperName = parts[0];
                     if (parts.Length > 1)
-                        layerTwoMode._addHyperedge(hyperName, Misc.SplitStringToUintArray(parts[1], '\t'));
+                    {
+                        // Parse tokens individually so one bad token doesn't discard every valid
+                        // node id on the line - Misc.SplitStringToUintArray is all-or-nothing and
+                        // would otherwise silently drop the whole row's membership.
+                        string[] tokens = parts[1].Split('\t');
+                        var nodeIds = new List<uint>(tokens.Length);
+                        foreach (string token in tokens)
+                            if (uint.TryParse(token.Trim(), out uint nodeId))
+                                nodeIds.Add(nodeId);
+                        layerTwoMode._addHyperedge(hyperName, nodeIds.Count > 0 ? nodeIds.ToArray() : null);
+                    }
                     else
                         layerTwoMode._addHyperedge(hyperName);
                 }

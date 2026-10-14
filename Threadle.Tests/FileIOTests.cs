@@ -647,6 +647,39 @@ public class FileIOTests : IDisposable
         Assert.Equal(new uint[] { 1 }, ((ILayerOneMode)loadedNetUnpacked.Layers["friends"]).GetNodeAlters(1, EdgeTraversal.Out));
     }
 
+    [Fact]
+    public void SaveLoadNetwork_Tsv_TwoMode_DuplicateNodeIdAndBadToken_HandledGracefully()
+    {
+        // A hand-written network tsv file, simulating a hyperedge row with a repeated node id
+        // (e.g. a duplicate source row) and one unparseable token (e.g. a stray non-numeric
+        // value). Neither should wipe the whole row's membership, and the duplicate must
+        // collapse to a single membership.
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".tsv");
+        FileManager.Save(ns, nsPath);
+
+        string netPath = TempFile(".tsv");
+        File.WriteAllLines(netPath, new[]
+        {
+            "Name: test-net",
+            $"NodesetFile: {Path.GetFileName(nsPath)}",
+            "",
+            "# Layer",
+            "LayerMode: 2",
+            "LayerName: clubs",
+            "chess\t1\t1\t2\tabc\t3"
+        });
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network").Value!.MainStructure;
+
+        var chess = loadedNet.GetHyperedgeNodes("clubs", "chess");
+        Assert.True(chess.Success);
+        Assert.Equal(3, chess.Value!.Length);
+        Assert.Contains(1u, chess.Value);
+        Assert.Contains(2u, chess.Value);
+        Assert.Contains(3u, chess.Value);
+    }
+
     // ── Binary network: 2-mode layer ──────────────────────────────────────────
 
     [Fact]
