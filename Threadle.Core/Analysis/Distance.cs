@@ -204,10 +204,19 @@ namespace Threadle.Core.Analysis
 
 
 
-        public static (OperationResult<StructureResult> Result, List<(string From, string To, int Step, long Count)>? Histograms) RandomWalkNodeAttributeFirstPassageTimeDistances(Network network, string attrName, int maxSteps, string[]? layers, float walkfactor, int minPairObs, bool balanced, bool weighted, bool returnHistograms = false)
+        public static (OperationResult<StructureResult> Result, List<(string From, string To, int Step, long Count)>? Histograms) RandomWalkNodeAttributeFirstPassageTimeDistances(Network network, string attrName, int maxSteps, string[]? layers, float walkfactor, int minPairObs, bool balanced, bool weighted, bool returnHistograms = false, float[]? layerWeights = null)
         {
             if (CheckLayersExist(network, layers) is OperationResult result)
                 return (OperationResult<StructureResult>.Fail(result), []);
+            if (layerWeights != null)
+            {
+                if (layers == null)
+                    return (OperationResult<StructureResult>.Fail("InvalidArguments", "'layerweights' requires 'layers' to be given explicitly, so each weight can be matched to a specific layer."), []);
+                if (layerWeights.Length != layers.Length)
+                    return (OperationResult<StructureResult>.Fail("LengthMismatch", $"The number of layer weights ({layerWeights.Length}) differs from the number of layers ({layers.Length})."), []);
+                if (layerWeights.Any(w => w <= 0))
+                    return (OperationResult<StructureResult>.Fail("InvalidArguments", "All layer weights must be positive."), []);
+            }
 
             if (walkfactor <= 0)
                 return (OperationResult<StructureResult>.Fail("InvalidParameter", $"The 'walkfactor' parameter must be greater than zero."), []);
@@ -252,7 +261,7 @@ namespace Threadle.Core.Analysis
                 uint currentNodeId = startNodeId;
                 for (int step = 1; step <= maxSteps; step++)
                 {
-                    var randomAlterResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted);
+                    var randomAlterResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted, layerWeights);
                     if (!randomAlterResult.Success) break;
                     currentNodeId = randomAlterResult.Value;
                     if (currentNodeId == startNodeId || !nodeAttributeStringToNodeId.TryGetValue(GetCategoryString(currentNodeId), out uint currentCatId))

@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Globalization;
+using System.Text;
 using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Processing.Enums;
@@ -72,6 +73,22 @@ namespace Threadle.Core.Utilities
             var result = new uint[parts.Length];
             for (int i = 0; i < parts.Length; i++)
                 if (!uint.TryParse(parts[i].Trim(), out result[i]))
+                    return null;
+            return result;
+        }
+
+        /// <summary>
+        /// Converts a string of char-separated float values into an array of these float values.
+        /// </summary>
+        /// <param name="valuesString">A string with char-separated float values.</param>
+        /// <param name="sep">The separator character that should be used (default is semicolon ;)</param>
+        /// <returns>Returns an array of floats, or null if any part could not be parsed.</returns>
+        public static float[]? SplitStringToFloatArray(string valuesString, char sep = ';')
+        {
+            var parts = valuesString.Split(sep);
+            var result = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                if (!float.TryParse(parts[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out result[i]))
                     return null;
             return result;
         }
@@ -153,9 +170,9 @@ namespace Threadle.Core.Utilities
             return type switch
             {
                 NodeAttributeType.Int => int.TryParse(valueStr, out int i) ? new NodeAttributeValue(i) : null,
-                NodeAttributeType.Float => float.TryParse(valueStr, out float f)? new NodeAttributeValue(f): null,
-                NodeAttributeType.Bool => bool.TryParse(valueStr, out bool b)? new NodeAttributeValue(b):null,
-                NodeAttributeType.Char => valueStr.Length==1? new NodeAttributeValue(valueStr[0]):null,
+                NodeAttributeType.Float => float.TryParse(valueStr, out float f) ? new NodeAttributeValue(f) : null,
+                NodeAttributeType.Bool => bool.TryParse(valueStr, out bool b) ? new NodeAttributeValue(b) : null,
+                NodeAttributeType.Char => valueStr.Length == 1 ? new NodeAttributeValue(valueStr[0]) : null,
                 NodeAttributeType.String => null,
                 _ => null
             };

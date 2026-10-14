@@ -14,12 +14,12 @@ namespace Threadle.CLIconsole.Commands
         /// <summary>
         /// Gets the command syntax definition as shown in help and usage output.
         /// </summary>
-        public string Syntax => "[var:network] = rwfpt(network = [var:network], attrname = [str], maxsteps = [int], *layernames = [semicolon-separated], *walkfactor = [float(default=1.0)], *minpairobs = [int(default=10)], *balanced = ['false'(default),'true'], *weighted = ['false'(default),'true']c, *returnhistograms = ['false'(default),'true'])";
+        public string Syntax => "[var:network] = rwfpt(network = [var:network], attrname = [str], maxsteps = [int], *layernames = [semicolon-separated], *walkfactor = [float(default=1.0)], *minpairobs = [int(default=10)], *balanced = ['false'(default),'true'], *weighted = ['false'(default),'true']c, *returnhistograms = ['false'(default),'true'], *layerweights = [semicolon-separated floats])";
 
         /// <summary>
         /// Gets a human-readable description of what the command does.
         /// </summary>
-        public string Description => "Initializes and executes a first-passage-time-based distance-measuring random walker (experimental). The initial sampling pass runs in parallel across up to 'maxthreads' threads (see 'setting()'); exact reproducibility via 'randomseed()' is only guaranteed when maxthreads is set to 1.";
+        public string Description => "Initializes and executes a first-passage-time-based distance-measuring random walker (experimental). The initial sampling pass runs in parallel across up to 'maxthreads' threads (see 'setting()'); exact reproducibility via 'randomseed()' is only guaranteed when maxthreads is set to 1. 'layerweights' only applies when 'balanced' is true and more than one layer is used: it gives the relative probability of picking each layer first at each step, in the same order as 'layernames' (which must then be given explicitly), normalized automatically (e.g. 8 and 16 means the second layer is picked twice as often as the first) - useful for e.g. modeling how much time a node spends in each context/domain. Without it, layer-picking is uniform, and it is ignored entirely when 'balanced' is false.";
 
         /// <summary>
         /// Gets a value indicating whether this command produces output that must be assigned to a variable.
@@ -46,8 +46,12 @@ namespace Threadle.CLIconsole.Commands
             bool balanced = command.GetArgumentParseBool("balanced", false);
             bool weighted = command.GetArgumentParseBool("weighted", false);
             bool returnHistograms = command.GetArgumentParseBool("returnhistograms", false);
+            string layerWeightsRaw = command.GetArgumentParseString("layerweights", "");
+            float[]? layerWeights = null;
+            if (layerWeightsRaw.Length > 0 && (layerWeights = Misc.SplitStringToFloatArray(layerWeightsRaw)) == null)
+                return CommandResult.Fail("ParseError", "Could not parse semicolon-separated list with layerweights.");
 
-            var (result, histograms) = Core.Analysis.Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(network, attrName, maxSteps, layers, walkfactor, minPairObs, balanced, weighted, returnHistograms);
+            var (result, histograms) = Core.Analysis.Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(network, attrName, maxSteps, layers, walkfactor, minPairObs, balanced, weighted, returnHistograms, layerWeights);
             if (!result.Success)
                 return CommandResult.Fail(result.Code, result.Message);
             StructureResult structures = result.Value!;

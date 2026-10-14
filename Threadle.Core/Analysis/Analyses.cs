@@ -1121,9 +1121,15 @@ namespace Threadle.Core.Analysis
         /// Given an ego node, returns a random alter. Resolves layer names then delegates to the
         /// pre-resolved overload. For hot-path walk loops, resolve layers once and use
         /// GetRandomAlter(uint, IReadOnlyList<ILayer>, ...) directly.
+        /// 'layerWeights', if given, applies only when 'balanced' is true and there is more than one
+        /// layer: it controls the probability of picking each layer first (proportionally — they need
+        /// not sum to 1), parallel in order to 'layerNames', which must then be given explicitly (there
+        /// is no way to match weights to "all layers" reliably). It is otherwise ignored.
         /// </summary>
-        public static OperationResult<uint> GetRandomAlter(Network network, uint nodeId, string[]? layerNames, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false)
+        public static OperationResult<uint> GetRandomAlter(Network network, uint nodeId, string[]? layerNames, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false, float[]? layerWeights = null)
         {
+            if (layerWeights != null && layerNames == null)
+                return OperationResult<uint>.Fail("InvalidArguments", "'layerweights' requires 'layernames' to be given explicitly, so each weight can be matched to a specific layer.");
             List<ILayer> layersToUse = [];
             if (layerNames == null)
                 layersToUse.AddRange(network.Layers.Values);
@@ -1137,16 +1143,26 @@ namespace Threadle.Core.Analysis
                     layersToUse.Add(layerResult.Value!);
                 }
             }
-            return GetRandomAlter(nodeId, layersToUse, edgeTraversal, balanced, weighted);
+            return GetRandomAlter(nodeId, layersToUse, edgeTraversal, balanced, weighted, layerWeights);
         }
 
         /// <summary>
         /// Hot-path overload: accepts pre-resolved layers to avoid per-step layer lookup and List allocation.
         /// For non-balanced 2-mode layers the fast path (PickRandomAlterO1 / AppendProjectedAltersReservoir)
         /// is used via ILayerTwoMode, covering both LayerTwoMode and LayerTwoModeStatic.
+        /// 'layerWeights', if given, must be parallel in order to 'layersToUse' (same length) and all
+        /// positive; it applies only when 'balanced' is true and there is more than one layer.
         /// </summary>
-        public static OperationResult<uint> GetRandomAlter(uint nodeId, IReadOnlyList<ILayer> layersToUse, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false)
+        public static OperationResult<uint> GetRandomAlter(uint nodeId, IReadOnlyList<ILayer> layersToUse, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false, float[]? layerWeights = null)
         {
+            if (layerWeights != null)
+            {
+                if (layerWeights.Length != layersToUse.Count)
+                    return OperationResult<uint>.Fail("LengthMismatch", $"The number of layer weights ({layerWeights.Length}) differs from the number of layers ({layersToUse.Count}).");
+                if (layerWeights.Any(w => w <= 0))
+                    return OperationResult<uint>.Fail("InvalidArguments", "All layer weights must be positive.");
+            }
+
             if (weighted)
             {
                 List<(uint alterId, float weight)> candidates = [];
@@ -1157,12 +1173,15 @@ namespace Threadle.Core.Analysis
                 }
                 else
                 {
-                    List<ILayer> eligibleLayers = layersToUse
-                        .Where(l => l.GetNodeAlters(nodeId, edgeTraversal).Length > 0)
-                        .ToList();
-                    if (eligibleLayers.Count == 0)
+                    bool[] eligible = new bool[layersToUse.Count];
+                    bool anyEligible = false;
+                    for (int i = 0; i < layersToUse.Count; i++)
+                        if (layersToUse[i].GetNodeAlters(nodeId, edgeTraversal).Length > 0)
+                            anyEligible = eligible[i] = true;
+                    if (!anyEligible)
                         return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-                    Functions.AppendWeightedCandidates(candidates, eligibleLayers[Misc.Random.Next(eligibleLayers.Count)], nodeId, edgeTraversal);
+                    int chosenIndex = PickWeightedLayerIndex(layersToUse.Count, eligible, layerWeights);
+                    Functions.AppendWeightedCandidates(candidates, layersToUse[chosenIndex], nodeId, edgeTraversal);
                 }
                 if (candidates.Count == 0)
                     return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
@@ -1205,16 +1224,48 @@ namespace Threadle.Core.Analysis
             }
             else
             {
-                // Balanced and multiple layers: uniform pick of layer, then uniform pick within
-                List<uint[]> layerAltersList = layersToUse
-                    .Select(l => l.GetNodeAlters(nodeId, edgeTraversal))
-                    .Where(a => a.Length > 0)
-                    .ToList();
-                if (layerAltersList.Count == 0)
+                // Balanced and multiple layers: pick a layer (weighted by 'layerWeights' if given,
+                // uniform otherwise), then uniform pick of alter within it.
+                bool[] eligible = new bool[layersToUse.Count];
+                uint[][] altersPerLayer = new uint[layersToUse.Count][];
+                bool anyEligible = false;
+                for (int i = 0; i < layersToUse.Count; i++)
+                {
+                    altersPerLayer[i] = layersToUse[i].GetNodeAlters(nodeId, edgeTraversal);
+                    if (altersPerLayer[i].Length > 0)
+                        anyEligible = eligible[i] = true;
+                }
+                if (!anyEligible)
                     return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-                uint[] chosenLayerAlters = layerAltersList[Misc.Random.Next(layerAltersList.Count)];
+                uint[] chosenLayerAlters = altersPerLayer[PickWeightedLayerIndex(layersToUse.Count, eligible, layerWeights)];
                 return OperationResult<uint>.Ok(chosenLayerAlters[Misc.Random.Next(chosenLayerAlters.Length)]);
             }
+        }
+
+        /// <summary>
+        /// Picks one eligible layer (by index into a 'count'-length list), weighted by 'layerWeights' if
+        /// given (parallel by index; ineligible entries are simply skipped), or uniformly otherwise.
+        /// Assumes at least one entry in 'eligible' is true.
+        /// </summary>
+        private static int PickWeightedLayerIndex(int count, bool[] eligible, float[]? layerWeights)
+        {
+            float total = 0f;
+            for (int i = 0; i < count; i++)
+                if (eligible[i])
+                    total += layerWeights?[i] ?? 1f;
+            double r = Misc.Random.NextDouble() * total;
+            double cum = 0;
+            int lastEligible = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (!eligible[i])
+                    continue;
+                lastEligible = i;
+                cum += layerWeights?[i] ?? 1f;
+                if (r < cum)
+                    return i;
+            }
+            return lastEligible; // floating-point fallback: last eligible index
         }
 
         /// <summary>

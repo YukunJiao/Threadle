@@ -217,6 +217,101 @@ public class DistanceTests
         Assert.InRange(count3, 750, 999);
     }
 
+    // ── GetRandomAlter — layerweights ──────────────────────────────────────────
+
+    [Fact]
+    public void GetRandomAlter_LayerWeights_HighWeightLayerPickedMoreOften()
+    {
+        // layer1 weight 8, layer2 weight 16: layer2's alter (3) should be picked ~2x as often
+        // as layer1's alter (2).
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        int count2 = 0, count3 = 0;
+        for (int i = 0; i < 3000; i++)
+        {
+            var r = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [8f, 16f]);
+            Assert.True(r.Success);
+            if (r.Value == 2) count2++;
+            else if (r.Value == 3) count3++;
+        }
+        Assert.True(count3 > count2 * 1.4,
+            $"Expected alter 3 (layer2, weight 16) ~2x more frequent than alter 2 (layer1, weight 8), got {count2} vs {count3}");
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeights_IneligibleLayerExcludedFromWeighting()
+    {
+        // Node 1 has no alters in layer2 at all. Despite layer2's much larger weight, the pick
+        // must still succeed and come from layer1 (the only eligible layer for this node).
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f, 100f]);
+
+        Assert.True(result.Success);
+        Assert.Equal(2u, result.Value);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeights_IgnoredWhenBalancedFalse()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: false, layerWeights: [8f, 16f]);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeightsWithoutLayerNames_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        net.AddEdge("layer1", 1, 2);
+
+        var result = Analyses.GetRandomAlter(net, 1, null, EdgeTraversal.Both, balanced: true, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeightsLengthMismatch_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeightsNonPositive_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f, 0f]);
+
+        Assert.False(result.Success);
+    }
+
 
     // ── RandomWalkNodeAttributeFirstPassageTimeDistances (parallelized initial pass) ─────
 
@@ -355,6 +450,55 @@ public class DistanceTests
         {
             UserSettings.MaxDegreeOfParallelism = -1;
         }
+    }
+
+    [Fact]
+    public void RwFpt_LayerWeightsWithoutLayers_Fails()
+    {
+        var net = MakeCompleteNetwork(6);
+        AssignTwoGroupCharAttr(net, "role", 3);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 2f, 0, true, false, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RwFpt_LayerWeightsLengthMismatch_Fails()
+    {
+        var net = MakeNetwork(6);
+        AddUndirected(net, "layerA");
+        AddUndirected(net, "layerB");
+        for (uint i = 1; i <= 6; i++)
+            for (uint j = i + 1; j <= 6; j++)
+            {
+                net.AddEdge("layerA", i, j);
+                net.AddEdge("layerB", i, j);
+            }
+        AssignTwoGroupCharAttr(net, "role", 3);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, ["layerA", "layerB"], 2f, 0, true, false, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RwFpt_LayerWeights_Succeeds()
+    {
+        var net = MakeNetwork(6);
+        AddUndirected(net, "layerA");
+        AddUndirected(net, "layerB");
+        for (uint i = 1; i <= 6; i++)
+            for (uint j = i + 1; j <= 6; j++)
+            {
+                net.AddEdge("layerA", i, j);
+                net.AddEdge("layerB", i, j);
+            }
+        AssignTwoGroupCharAttr(net, "role", 3);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, ["layerA", "layerB"], 2f, 0, true, false, layerWeights: [1f, 3f]);
+
+        Assert.True(result.Success, result.Message);
     }
 
     // ── ShortestPathsNodeAttributeDistances (parallelized per-source BFS) ────────
