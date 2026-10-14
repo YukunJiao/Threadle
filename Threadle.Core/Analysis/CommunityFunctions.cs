@@ -947,6 +947,18 @@ namespace Threadle.Core.Analysis
                         adjDict[vi][ui] = adjDict[vi].GetValueOrDefault(ui) + w;
                     }
                 }
+
+                // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly,
+                // counted twice per the standard undirected-graph degree convention (same as a normal
+                // discovered edge would be, which accumulates into adjDict[ui][vi] from both "sides").
+                if (!layer.IsDirectional && layer.Selfties)
+                    foreach (uint nodeId in nodeIds)
+                    {
+                        if (!idx.TryGetValue(nodeId, out int ui)) continue;
+                        if (!layer.CheckEdgeExists(nodeId, nodeId)) continue;
+                        double w = layer.GetEdgeValue(nodeId, nodeId);
+                        adjDict[ui][ui] = adjDict[ui].GetValueOrDefault(ui) + 2 * w;
+                    }
             }
 
             var (neighbors, weights) = ToArrays(adjDict, n);

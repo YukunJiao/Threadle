@@ -172,6 +172,37 @@ public class NetworkProcessorTests
     }
 
     [Fact]
+    public void DichotomizeLayer_SelfLoopAboveThreshold_IsPreservedDynamic()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 5f);
+        net.AddEdge("trust", 1, 2, 1f);
+
+        var result = NetworkProcessor.DichotomizeLayer(net, "trust", ConditionType.ge, 3f, 1f, 0f, "binary");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["binary"].CheckEdgeExists(1, 1));
+        Assert.False(net.Layers["binary"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
+    public void DichotomizeLayer_SelfLoopAboveThreshold_IsPreservedStatic()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 5f);
+        net.AddEdge("trust", 1, 2, 1f);
+        net.Pack("trust");
+
+        var result = NetworkProcessor.DichotomizeLayer(net, "trust", ConditionType.ge, 3f, 1f, 0f, "binary");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["binary"].CheckEdgeExists(1, 1));
+        Assert.False(net.Layers["binary"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
     public void DichotomizeLayer_OutputIsAlwaysDynamic()
     {
         var net = new Network("net", MakeNodeset());
@@ -616,6 +647,37 @@ public class NetworkProcessorTests
         Assert.Equal(EdgeType.Valued, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
         Assert.Equal(2f, net.Layers["merged"].GetEdgeValue(1, 2));
         Assert.Equal(1f, net.Layers["merged"].GetEdgeValue(2, 3));
+    }
+
+    [Fact]
+    public void MergeLayers_SelfLoopInBothSources_IsPreserved()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("a", 1, 1);
+        net.AddEdge("b", 1, 1);
+        net.AddEdge("a", 1, 2);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 1));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_SelfLoopInOnlyOneSource_IsPreserved()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("a", 1, 1);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 1));
     }
 
     [Fact]

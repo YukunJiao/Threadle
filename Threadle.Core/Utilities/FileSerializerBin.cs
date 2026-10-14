@@ -535,6 +535,17 @@ namespace Threadle.Core.Utilities
                     // Get egodata (like nodelist2)
                     var egoData = layerOneMode.GetAllEgoData().ToList();
 
+                    // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly,
+                    // each as its own extra row (LayerOneModeStatic.FromBinaryNodelistRows/FromValuedNodelistRows
+                    // on the read side special-case a row whose single alter equals its own ego id, to avoid
+                    // double-adding it while expanding half-adjacency to full-adjacency).
+                    if (layerOneMode.IsSymmetric && layerOneMode.Selfties)
+                        foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                            if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                            {
+                                float[]? selfValues = layerOneMode.IsValued ? new float[] { layerOneMode.GetEdgeValue(nodeId, nodeId) } : null;
+                                egoData.Add((nodeId, new uint[] { nodeId }, selfValues));
+                            }
 
                     // Get nbr of edgesets (nodelist rows)
                     //int nbrEdgesets = layerOneMode.Edgesets.Count;

@@ -95,7 +95,20 @@ namespace Threadle.Core.Utilities
                     writer.WriteEndElement();
                 }
             }
-            
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (!layerOneMode.IsDirectional && layerOneMode.Selfties)
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                    {
+                        writer.WriteStartElement("edge");
+                        writer.WriteAttributeString("id", $"{edgeId++}");
+                        writer.WriteAttributeString("source", $"{nodeId}");
+                        writer.WriteAttributeString("target", $"{nodeId}");
+                        if (layerOneMode.EdgeValueType == EdgeType.Valued)
+                            writer.WriteAttributeString("weight", layerOneMode.GetEdgeValue(nodeId, nodeId).ToString(CultureInfo.InvariantCulture));
+                        writer.WriteEndElement();
+                    }
 
             writer.WriteEndElement();
 

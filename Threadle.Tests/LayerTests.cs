@@ -758,6 +758,56 @@ public class LayerTests
     }
 
     [Fact]
+    public void NbrEdges_SelfLoopInUndirectedLayer_CountsAsOneNotHalved()
+    {
+        // NbrEdges halves the total raw connection count for undirected layers (each ordinary
+        // edge is stored once per endpoint), but a self-loop is stored only once overall - it
+        // must contribute 1 to NbrEdges, not be halved away to 0.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        Assert.Equal(2UL, ((ILayerOneMode)net.Layers["friends"]).NbrEdges);
+    }
+
+    [Fact]
+    public void NbrEdges_SelfLoopInUndirectedLayer_SameForPackedAndDynamic()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 3, 3);
+
+        ulong dynamicCount = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+        net.Pack("friends");
+        ulong packedCount = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+
+        Assert.Equal(3UL, dynamicCount);
+        Assert.Equal(3UL, packedCount);
+    }
+
+    [Fact]
+    public void Unpack_UndirectedBinaryLayerWithSelfLoop_EdgeCountUnchanged()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        ulong edgesBefore = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+        net.Pack("friends");
+        net.Unpack("friends");
+
+        Assert.Equal(edgesBefore, ((ILayerOneMode)net.Layers["friends"]).NbrEdges);
+        Assert.True(net.Layers["friends"].CheckEdgeExists(1, 1));
+    }
+
+    [Fact]
     public void Unpack_UndirectedBinaryLayer_QueriesStillWork()
     {
         // Regression: after Pack→Unpack on symmetric layer, edges must remain queryable

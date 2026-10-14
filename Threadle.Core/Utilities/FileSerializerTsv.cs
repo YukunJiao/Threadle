@@ -158,6 +158,20 @@ namespace Threadle.Core.Utilities
                         }
                         writer.WriteLine(sb.ToString());
                     }
+
+                    // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+                    if (layerOneMode.IsSymmetric && layerOneMode.Selfties)
+                        foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                            if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                            {
+                                sb.Clear();
+                                sb.Append(nodeId);
+                                if (isValued)
+                                    sb.Append($"\t{nodeId};{layerOneMode.GetEdgeValue(nodeId, nodeId).ToString(CultureInfo.InvariantCulture)}");
+                                else
+                                    sb.Append($"\t{nodeId}");
+                                writer.WriteLine(sb.ToString());
+                            }
                 }
                 else if (layer is ILayerTwoMode layerTwoMode)
                 {
