@@ -1945,6 +1945,172 @@ public class AnalysesTests
         Assert.Equal(5, (int)result.Value!["NumRestarts"]);
     }
 
+    // ── CommunityDetectionGirvanNewman ──────────────────────────────────────────
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_TwoTrianglesWithBridge_FindsTwoCommunities()
+    {
+        // Textbook Girvan-Newman case: the bridge has by far the highest edge betweenness,
+        // so it's removed first, immediately splitting the graph into the two triangles —
+        // the modularity-maximizing partition, found on the very first removal.
+        var net = MakeNetwork(6);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 4, 5);
+        net.AddEdge("layer", 4, 6);
+        net.AddEdge("layer", 5, 6);
+        net.AddEdge("layer", 3, 4); // bridge
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, (int)result.Value!["NbrCommunities"]);
+        Assert.True((double)result.Value!["Modularity"] > 0.0);
+
+        var sizes = (List<int>)result.Value!["CommunitySizes"];
+        Assert.Equal(new List<int> { 3, 3 }, sizes);
+
+        var c1 = net.Nodeset.GetNodeAttribute(1, "layer_community");
+        var c3 = net.Nodeset.GetNodeAttribute(3, "layer_community");
+        var c4 = net.Nodeset.GetNodeAttribute(4, "layer_community");
+        var c6 = net.Nodeset.GetNodeAttribute(6, "layer_community");
+        Assert.True(c1.Success && c3.Success && c4.Success && c6.Success);
+        object v1 = c1.Value.Value.GetValue(c1.Value.Type)!;
+        object v3 = c3.Value.Value.GetValue(c3.Value.Type)!;
+        object v4 = c4.Value.Value.GetValue(c4.Value.Type)!;
+        object v6 = c6.Value.Value.GetValue(c6.Value.Type)!;
+        Assert.Equal(v1, v3);
+        Assert.Equal(v4, v6);
+        Assert.NotEqual(v1, v4);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_TwoDisconnectedTriangles_FindsTwoCommunities()
+    {
+        var net = MakeNetwork(6);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 4, 5);
+        net.AddEdge("layer", 4, 6);
+        net.AddEdge("layer", 5, 6);
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, (int)result.Value!["NbrCommunities"]);
+        var sizes = (List<int>)result.Value!["CommunitySizes"];
+        Assert.Equal(new List<int> { 3, 3 }, sizes);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_NoEdges_EveryNodeIsOwnCommunity()
+    {
+        var net = MakeNetwork(4);
+        AddUndirectedLayer(net, "layer");
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(4, (int)result.Value!["NbrCommunities"]);
+        Assert.Equal(0.0, (double)result.Value!["Modularity"]);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_DirectedLayer_Symmetrizes()
+    {
+        var net = MakeNetwork(6);
+        AddDirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 4, 5);
+        net.AddEdge("layer", 4, 6);
+        net.AddEdge("layer", 5, 6);
+        net.AddEdge("layer", 3, 4);
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, (int)result.Value!["NbrCommunities"]);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_TwoModeLayer_Fails()
+    {
+        var net = MakeNetwork(3);
+        net.AddLayerTwoMode("clubs");
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "clubs" });
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_NumRestartsAlwaysReportedAsOne()
+    {
+        var net = MakeNetwork(3);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+
+        var result = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, (int)result.Value!["NumRestarts"]);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_HigherResolution_FindsAtLeastAsManyCommunities()
+    {
+        var net = MakeNetwork(6);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 4, 5);
+        net.AddEdge("layer", 4, 6);
+        net.AddEdge("layer", 5, 6);
+        net.AddEdge("layer", 3, 4);
+
+        var lowRes = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" }, "lowres", resolution: 0.5);
+        var highRes = Analyses.CommunityDetectionGirvanNewman(net, new[] { "layer" }, "highres", resolution: 4.0);
+
+        Assert.True(lowRes.Success);
+        Assert.True(highRes.Success);
+        Assert.True((int)highRes.Value!["NbrCommunities"] >= (int)lowRes.Value!["NbrCommunities"]);
+    }
+
+    [Fact]
+    public void CommunityDetectionGirvanNewman_MaxThreadsOneVsMany_ProduceSameResult()
+    {
+        if (Environment.ProcessorCount < 2)
+            return; // nothing extra to exercise on a single-core runner
+
+        try
+        {
+            var netSeq = MakeRingWithChordsNetwork(12);
+            UserSettings.Set("maxthreads", 1);
+            var seqResult = Analyses.CommunityDetectionGirvanNewman(netSeq, new[] { "layer" });
+
+            var netPar = MakeRingWithChordsNetwork(12);
+            UserSettings.Set("maxthreads", Math.Min(4, Environment.ProcessorCount));
+            var parResult = Analyses.CommunityDetectionGirvanNewman(netPar, new[] { "layer" });
+
+            Assert.True(seqResult.Success);
+            Assert.True(parResult.Success);
+            Assert.Equal((int)seqResult.Value!["NbrCommunities"], (int)parResult.Value!["NbrCommunities"]);
+            Assert.Equal((double)seqResult.Value!["Modularity"], (double)parResult.Value!["Modularity"], precision: 10);
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
+    }
+
     // ── Density: edge case – single node ─────────────────────────────────────
 
     [Fact]
@@ -2268,6 +2434,122 @@ public class AnalysesTests
         }
     }
 
+    // ── Eccentricity ─────────────────────────────────────────────────────────────
+    // Unlike Diameter, computed per node individually — not restricted to the largest
+    // component — so disconnected pieces and isolated nodes each get their own value.
+
+    [Fact]
+    public void Eccentricity_PathGraph_MatchesKnownValues()
+    {
+        // 1-2-3-4-5 undirected path: eccentricities are 4,3,2,3,4 (distance to the farthest end).
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 3, 4);
+        net.AddEdge("layer", 4, 5);
+
+        var result = Analyses.Eccentricity(net, "layer");
+
+        Assert.True(result.Success, result.Message);
+        (int, int)[] expected = [(1, 4), (2, 3), (3, 2), (4, 3), (5, 4)];
+        foreach (var (nodeId, expectedEcc) in expected)
+        {
+            var attr = net.Nodeset.GetNodeAttribute((uint)nodeId, "eccentricity");
+            Assert.True(attr.Success);
+            Assert.Equal(expectedEcc, (int)attr.Value.Value.GetValue(attr.Value.Type)!);
+        }
+    }
+
+    [Fact]
+    public void Eccentricity_DisconnectedNetwork_EachComponentGetsItsOwnValue()
+    {
+        // Triangle {1,2,3} (eccentricity 1 for every member) + isolated node 4 (eccentricity 0).
+        var net = MakeNetwork(4);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+
+        var result = Analyses.Eccentricity(net, "layer");
+
+        Assert.True(result.Success, result.Message);
+        foreach (uint nodeId in new uint[] { 1, 2, 3 })
+        {
+            var attr = net.Nodeset.GetNodeAttribute(nodeId, "eccentricity");
+            Assert.Equal(1, (int)attr.Value.Value.GetValue(attr.Value.Type)!);
+        }
+        var isolated = net.Nodeset.GetNodeAttribute(4, "eccentricity");
+        Assert.Equal(0, (int)isolated.Value.Value.GetValue(isolated.Value.Type)!);
+    }
+
+    [Fact]
+    public void Eccentricity_DirectedLayer_TraversalChangesResult()
+    {
+        // 1->2->3: from 'out', node 3's eccentricity is 0 (no outbound reach); from 'both',
+        // direction is ignored so node 3 can reach node 1 (distance 2).
+        var net = MakeNetwork(3);
+        AddDirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+
+        var outResult = Analyses.Eccentricity(net, "layer", "ecc_out", EdgeTraversal.Out);
+        var bothResult = Analyses.Eccentricity(net, "layer", "ecc_both", EdgeTraversal.Both);
+
+        Assert.True(outResult.Success);
+        Assert.True(bothResult.Success);
+        var out3 = net.Nodeset.GetNodeAttribute(3, "ecc_out");
+        var both3 = net.Nodeset.GetNodeAttribute(3, "ecc_both");
+        Assert.Equal(0, (int)out3.Value.Value.GetValue(out3.Value.Type)!);
+        Assert.Equal(2, (int)both3.Value.Value.GetValue(both3.Value.Type)!);
+    }
+
+    [Fact]
+    public void Eccentricity_NonExistentLayer_Fails()
+    {
+        var net = MakeNetwork(3);
+        var result = Analyses.Eccentricity(net, "ghost");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Eccentricity_TwoModeLayer_Fails()
+    {
+        var net = MakeNetwork(3);
+        net.AddLayerTwoMode("clubs");
+        var result = Analyses.Eccentricity(net, "clubs");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Eccentricity_MaxThreadsOneVsMany_ProduceSameValues()
+    {
+        if (Environment.ProcessorCount < 2)
+            return; // nothing extra to exercise on a single-core runner
+
+        try
+        {
+            var netSeq = MakeRingWithChordsNetwork(20);
+            UserSettings.Set("maxthreads", 1);
+            Analyses.Eccentricity(netSeq, "layer");
+
+            var netPar = MakeRingWithChordsNetwork(20);
+            UserSettings.Set("maxthreads", Math.Min(4, Environment.ProcessorCount));
+            Analyses.Eccentricity(netPar, "layer");
+
+            foreach (uint nodeId in netSeq.Nodeset.NodeIdArray)
+            {
+                var seqAttr = netSeq.Nodeset.GetNodeAttribute(nodeId, "eccentricity");
+                var parAttr = netPar.Nodeset.GetNodeAttribute(nodeId, "eccentricity");
+                Assert.Equal((int)seqAttr.Value.Value.GetValue(seqAttr.Value.Type)!, (int)parAttr.Value.Value.GetValue(parAttr.Value.Type)!);
+            }
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
+    }
+
     // ── Diameter ─────────────────────────────────────────────────────────────────
     // Restricted to the largest weakly connected component; exact mode runs a full BFS
     // from every node in that component (NetworkLevelFunctions.Diameter), sampled mode
@@ -2437,6 +2719,104 @@ public class AnalysesTests
         {
             UserSettings.MaxDegreeOfParallelism = -1;
         }
+    }
+
+    // ── SmallWorldCoefficient ────────────────────────────────────────────────────
+    // The random reference is stochastic (independent rewire() trials), so these tests
+    // check mechanical correctness (observed values, field shapes, no side effects) rather
+    // than asserting a specific qualitative "this network is small-world" outcome.
+
+    [Fact]
+    public void SmallWorldCoefficient_ObservedAvgDistanceMatchesDiameter()
+    {
+        var net = MakeRingWithChordsNetwork(15);
+
+        var swResult = Analyses.SmallWorldCoefficient(net, "layer", nullTrials: 1);
+        var diameterResult = Analyses.Diameter(net, "layer");
+
+        Assert.True(swResult.Success, swResult.Message);
+        Assert.True(diameterResult.Success);
+        Assert.Equal((double)diameterResult.Value!["AvgDistance"], (double)swResult.Value!["ObservedAvgDistance"], precision: 10);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_ObservedClusteringMatchesClusteringCoefficient()
+    {
+        var net = MakeRingWithChordsNetwork(15);
+
+        var swResult = Analyses.SmallWorldCoefficient(net, "layer", nullTrials: 1);
+        Assert.True(swResult.Success, swResult.Message);
+
+        var ccResult = Analyses.ClusteringCoefficient(net, new[] { "layer" }, "cc_check");
+        Assert.True(ccResult.Success);
+        double expectedClustering = net.Nodeset.NodeIdArray.Select(id =>
+        {
+            var attr = net.Nodeset.GetNodeAttribute(id, "cc_check");
+            return (double)(float)attr.Value.Value.GetValue(attr.Value.Type)!;
+        }).Average();
+
+        // Loose tolerance: the independently-computed value round-trips through a float
+        // node attribute (string -> float), while SmallWorldCoefficient's own value does not.
+        Assert.Equal(expectedClustering, (double)swResult.Value!["ObservedClustering"], precision: 4);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_ReturnsAllExpectedFields()
+    {
+        var net = MakeRingWithChordsNetwork(15);
+
+        var result = Analyses.SmallWorldCoefficient(net, "layer", nullTrials: 3);
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.Value!.ContainsKey("Sigma"));
+        Assert.True(result.Value!.ContainsKey("ObservedClustering"));
+        Assert.True(result.Value!.ContainsKey("ObservedAvgDistance"));
+        Assert.True(result.Value!.ContainsKey("RandomClustering"));
+        Assert.True(result.Value!.ContainsKey("RandomAvgDistance"));
+        Assert.Equal(3, (int)result.Value!["NullTrials"]);
+        Assert.True((double)result.Value!["RandomClustering"] >= 0.0);
+        Assert.True((double)result.Value!["RandomAvgDistance"] >= 0.0);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_DoesNotModifyNetwork()
+    {
+        var net = MakeRingWithChordsNetwork(15);
+        int layerCountBefore = net.Layers.Count;
+        ulong edgeCountBefore = ((ILayerOneMode)net.Layers["layer"]).NbrEdges;
+
+        var result = Analyses.SmallWorldCoefficient(net, "layer", nullTrials: 3);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(layerCountBefore, net.Layers.Count);
+        Assert.Equal(edgeCountBefore, ((ILayerOneMode)net.Layers["layer"]).NbrEdges);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_NonExistentLayer_Fails()
+    {
+        var net = MakeNetwork(3);
+        var result = Analyses.SmallWorldCoefficient(net, "ghost");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_TwoModeLayer_Fails()
+    {
+        var net = MakeNetwork(3);
+        net.AddLayerTwoMode("clubs");
+
+        var result = Analyses.SmallWorldCoefficient(net, "clubs");
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void SmallWorldCoefficient_NullTrialsLessThanOne_Fails()
+    {
+        var net = MakeRingWithChordsNetwork(10);
+        var result = Analyses.SmallWorldCoefficient(net, "layer", nullTrials: 0);
+        Assert.False(result.Success);
     }
 
     // ── ClusteringCoefficient ────────────────────────────────────────────────────

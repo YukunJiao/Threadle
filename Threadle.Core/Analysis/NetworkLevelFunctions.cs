@@ -384,6 +384,34 @@ namespace Threadle.Core.Analysis
         }
 
         /// <summary>
+        /// Per-node eccentricity: for each node, the length of the longest shortest path to any
+        /// node reachable from it (0 for a node with no reachable others). Unlike <see cref="Diameter"/>,
+        /// this is computed for every node individually rather than restricted to the largest
+        /// weakly connected component — a node in a smaller component simply gets that component's
+        /// eccentricity, and an isolated node gets 0. For directed layers, 'traversal' controls
+        /// which direction BFS follows. Runs a full BFS from every node in parallel across up to
+        /// 'maxthreads' threads (see 'setting()'); each source writes to its own array slot, so no
+        /// locking is needed on the hot path.
+        /// </summary>
+        internal static Dictionary<uint, int> Eccentricity(uint[] nodeIds, ILayerOneMode layer, EdgeTraversal traversal)
+        {
+            int[] ecc = new int[nodeIds.Length];
+            System.Threading.Tasks.Parallel.For(0, nodeIds.Length, UserSettings.GetParallelOptions(), i =>
+            {
+                var dist = GraphAlgorithms.BFS(nodeIds[i], [layer], [], [], traversal);
+                int max = 0;
+                foreach (int d in dist.Values)
+                    if (d > max) max = d;
+                ecc[i] = max;
+            });
+
+            var result = new Dictionary<uint, int>(nodeIds.Length);
+            for (int i = 0; i < nodeIds.Length; i++)
+                result[nodeIds[i]] = ecc[i];
+            return result;
+        }
+
+        /// <summary>
         /// Exact network diameter and average path length for a single 1-mode layer, restricted
         /// to the largest weakly connected component (ignoring edge direction when finding that
         /// component — the convention used by igraph/NetworkX, since both statistics are only

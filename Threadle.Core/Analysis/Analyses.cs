@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
+using Threadle.Core.Processing;
 using Threadle.Core.Utilities;
 
 namespace Threadle.Core.Analysis
@@ -129,6 +130,36 @@ namespace Threadle.Core.Analysis
         }
 
         /// <summary>
+        /// Detects communities via Girvan-Newman (2002) for the specified 1-mode layer(s), storing
+        /// the community index as an integer node attribute. Unlike CommunityDetectionLouvain/
+        /// Leiden/LabelPropagation/LPAm, which build communities up from singletons (agglomerative),
+        /// this tears the network down one edge at a time (divisive): repeatedly finds the edge with
+        /// the highest edge betweenness among the currently-remaining edges, removes it, and scores
+        /// the resulting connected-component partition by modularity against the *original*,
+        /// un-cut graph. The partition with the highest modularity seen across every removal step is
+        /// returned. Directed layers are symmetrized and multiple layers combine via summed edge
+        /// weight, matching every other community detection method; only 1-mode layers are accepted
+        /// — project 2-mode layers first. Because a full edge-betweenness recomputation is needed
+        /// after every single edge removal, this is substantially more expensive than the
+        /// agglomerative methods — O(V·E²) in the worst case — so it is best suited to smaller
+        /// networks; the per-removal betweenness pass itself runs in parallel across up to
+        /// 'maxthreads' threads (see 'setting()'). Deterministic given the graph (ties for highest
+        /// betweenness are broken by lowest node-index pair), so unlike the other methods this has no
+        /// numRestarts. Returns NbrCommunities, CommunitySizes (descending), and the achieved
+        /// Modularity score. Reference: Girvan &amp; Newman (2002) doi:10.1073/pnas.122653799.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionGirvanNewman(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.GirvanNewmanCommunities(nodeIds, oneModes, resolution);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts: 1);
+        }
+
+        /// <summary>
         /// Computes the Holland-Leinhardt triadic census for a single 1-mode layer: counts of the
         /// 16 isomorphism classes of directed triads (003, 012, 102, 021D, 021U, 021C, 111D, 111U,
         /// 030T, 030C, 201, 120D, 120U, 120C, 210, 300), plus the total number of triples and a
@@ -157,6 +188,27 @@ namespace Threadle.Core.Analysis
                 ? NetworkLevelFunctions.TriadicCensusSampled(network.Nodeset.NodeIdArray, lr.Value!, sampleSize)
                 : NetworkLevelFunctions.TriadicCensus(network.Nodeset.NodeIdArray, lr.Value!);
             return OperationResult<Dictionary<string, object>>.Ok(result);
+        }
+
+        /// <summary>
+        /// Calculates each node's eccentricity (the length of the longest shortest path to any
+        /// node reachable from it) in the specified 1-mode layer, storing the result as an int
+        /// node attribute. Unlike Diameter, this is computed for every node individually — not
+        /// restricted to the largest weakly connected component — so a node in a smaller component
+        /// gets its own component's eccentricity, and an isolated node gets 0. For directed
+        /// layers, 'traversal' controls which direction BFS follows. The per-node BFS passes run
+        /// in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult Eccentricity(Network network, string layerName, string? attrName = null, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult.Fail(lr.Code, lr.Message);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var ecc = NetworkLevelFunctions.Eccentricity(nodeIds, lr.Value!, traversal);
+            attrName = string.IsNullOrEmpty(attrName) ? "eccentricity" : attrName;
+            var attrDict = ecc.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Int);
         }
 
         /// <summary>
@@ -192,6 +244,69 @@ namespace Threadle.Core.Analysis
                 ? NetworkLevelFunctions.DiameterSampled(network.Nodeset.NodeIdArray, lr.Value!, traversal, sampleSize, numSweeps)
                 : NetworkLevelFunctions.Diameter(network.Nodeset.NodeIdArray, lr.Value!, traversal);
             return OperationResult<Dictionary<string, object>>.Ok(diameterResult);
+        }
+
+        /// <summary>
+        /// Small-world coefficient sigma (Humphries &amp; Gurney 2008) for a single 1-mode layer:
+        /// (C_observed / C_random) / (L_observed / L_random), where C is the average local
+        /// clustering coefficient and L is the average shortest-path length, and the "random"
+        /// reference is the mean of 'nullTrials' independent degree-preserving rewirings of the
+        /// layer (rewire()'s default 2-edge swap, discarded after measuring — never added to the
+        /// network). sigma &gt; 1 indicates small-world structure: markedly more clustered than a
+        /// comparable random graph, without a correspondingly longer average path length.
+        /// Clustering uses whichever formula clusteringcoefficient() would auto-select for the
+        /// layer's type; average path length is diameter()'s AvgDistance, restricted to the
+        /// largest weakly connected component in both the observed and each random-reference
+        /// network, for a like-for-like comparison. For directed layers, 'traversal' controls
+        /// which direction BFS follows for the path-length measurements (clustering has its own
+        /// direction-aware formula regardless). Reports only sigma, not Telesford et al. (2011)'s
+        /// omega, which additionally needs a ring-lattice reference Threadle does not currently
+        /// generate.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> SmallWorldCoefficient(Network network, string layerName, int nullTrials = 10, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (nullTrials < 1)
+                return OperationResult<Dictionary<string, object>>.Fail("InvalidArgument", "'nullTrials' must be at least 1.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            ILayerOneMode layer = lr.Value!;
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+
+            ClusteringMethod method = LocalStructureFunctions.DetectMethod([layer]);
+            double cObserved = AverageClustering(nodeIds, layer, method);
+            double lObserved = (double)NetworkLevelFunctions.Diameter(nodeIds, layer, traversal)["AvgDistance"];
+
+            double cRandSum = 0.0, lRandSum = 0.0;
+            for (int t = 0; t < nullTrials; t++)
+            {
+                LayerOneMode randomLayer = NetworkProcessor.BuildRewiredLayer(layer, nodeIds, layerName + "-nullmodel", 0, false, 0, out _, out _);
+                cRandSum += AverageClustering(nodeIds, randomLayer, method);
+                lRandSum += (double)NetworkLevelFunctions.Diameter(nodeIds, randomLayer, traversal)["AvgDistance"];
+            }
+            double cRandom = cRandSum / nullTrials;
+            double lRandom = lRandSum / nullTrials;
+
+            double sigma = (cRandom > 0 && lObserved > 0 && lRandom > 0)
+                ? (cObserved / cRandom) / (lObserved / lRandom)
+                : double.NaN;
+
+            return OperationResult<Dictionary<string, object>>.Ok(new Dictionary<string, object>
+            {
+                ["Sigma"] = sigma,
+                ["ObservedClustering"] = cObserved,
+                ["ObservedAvgDistance"] = lObserved,
+                ["RandomClustering"] = cRandom,
+                ["RandomAvgDistance"] = lRandom,
+                ["NullTrials"] = nullTrials
+            });
+        }
+
+        /// <summary>Average local clustering coefficient over all nodes (0.0 if there are none).</summary>
+        private static double AverageClustering(uint[] nodeIds, ILayerOneMode layer, ClusteringMethod method)
+        {
+            var values = LocalStructureFunctions.ClusteringCoefficient(nodeIds, [layer], method);
+            return values.Count > 0 ? values.Values.Average() : 0.0;
         }
 
         /// <summary>

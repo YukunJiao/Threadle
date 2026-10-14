@@ -418,6 +418,33 @@ namespace Threadle.Core.Processing
             if (network.Layers.ContainsKey(newLayerName))
                 return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
 
+            LayerOneMode newLayer = BuildRewiredLayer(layer, network.Nodeset.NodeIdArray, newLayerName, numSwaps, threeEdgeSwap, maxTries, out int achievedSwaps, out int targetSwaps);
+            network.AddLayer(newLayerName, newLayer);
+
+            string swapNote = achievedSwaps < targetSwaps
+                ? $" ({achievedSwaps} of {targetSwaps} target swaps achieved before reaching the attempt limit)"
+                : $" ({achievedSwaps} swaps)";
+            return OperationResult.Ok($"Rewired layer '{layerName}' and stored it as new layer '{newLayerName}', all in network '{network.Name}'{swapNote}.");
+        }
+
+        /// <summary>
+        /// Core of RewireLayer: gathers edges, runs the swap chain, and returns a fresh, standalone
+        /// LayerOneMode with the same directionality/edge type/selfties as the source layer — not
+        /// registered in any Network. Shared by RewireLayer (which adds the result to the network)
+        /// and SmallWorldCoefficient (Analyses.cs), which only needs scratch random-reference layers
+        /// to measure, never persisted.
+        /// </summary>
+        /// <param name="layer">The source layer to rewire.</param>
+        /// <param name="nodeIds">All node ids (needed to find self-loops in symmetric layers, since GetAllEgoData() never yields them).</param>
+        /// <param name="newLayerName">The name to give the returned layer (cosmetic only when not registered in a network).</param>
+        /// <param name="numSwaps">Target number of successful swaps (0: ten times the edge count).</param>
+        /// <param name="threeEdgeSwap">Use the 3-edge path swap instead of the 2-edge swap (directed layers only).</param>
+        /// <param name="maxTries">Maximum total swap attempts, successful or not (0: ten times numSwaps).</param>
+        /// <param name="achievedSwaps">The number of swaps actually performed.</param>
+        /// <param name="targetSwaps">The resolved target swap count, after applying the 0-means-auto default.</param>
+        /// <returns>A new, standalone LayerOneMode with the rewired edges.</returns>
+        internal static LayerOneMode BuildRewiredLayer(ILayerOneMode layer, uint[] nodeIds, string newLayerName, int numSwaps, bool threeEdgeSwap, int maxTries, out int achievedSwaps, out int targetSwaps)
+        {
             bool directed = layer.IsDirectional;
             bool selfties = layer.Selfties;
 
@@ -432,15 +459,15 @@ namespace Threadle.Core.Processing
                     edges.Add((egoId, alterSpan[i], layer.IsValued ? valueSpan[i] : 1f));
             }
             if (!directed && selfties)
-                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                foreach (uint nodeId in nodeIds)
                     if (layer.CheckEdgeExists(nodeId, nodeId))
                         edges.Add((nodeId, nodeId, layer.IsValued ? layer.GetEdgeValue(nodeId, nodeId) : 1f));
 
             int edgeCount = edges.Count;
-            int targetSwaps = numSwaps > 0 ? numSwaps : 10 * edgeCount;
+            targetSwaps = numSwaps > 0 ? numSwaps : 10 * edgeCount;
             int attemptCap = maxTries > 0 ? maxTries : 10 * targetSwaps;
 
-            int achievedSwaps = 0;
+            achievedSwaps = 0;
             if (edgeCount >= 2 && targetSwaps > 0)
                 achievedSwaps = (directed && threeEdgeSwap)
                     ? RunThreeEdgeSwaps(edges, targetSwaps, attemptCap)
@@ -451,12 +478,7 @@ namespace Threadle.Core.Processing
                 newLayer._addEdge(from, to, weight);
             newLayer._sortEdgesets();
             newLayer._deduplicateEdgesets();
-            network.AddLayer(newLayerName, newLayer);
-
-            string swapNote = achievedSwaps < targetSwaps
-                ? $" ({achievedSwaps} of {targetSwaps} target swaps achieved before reaching the attempt limit)"
-                : $" ({achievedSwaps} swaps)";
-            return OperationResult.Ok($"Rewired layer '{layerName}' and stored it as new layer '{newLayerName}', all in network '{network.Name}'{swapNote}.");
+            return newLayer;
         }
 
         public static OperationResult ProjectTwoModeToOneMode(Network network, string layerName, ProjectionMethod method, string newLayerName)

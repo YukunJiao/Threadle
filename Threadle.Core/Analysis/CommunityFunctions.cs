@@ -366,6 +366,95 @@ namespace Threadle.Core.Analysis
             return (communities, modularity);
         }
 
+        /// <summary>
+        /// Girvan-Newman (2002): divisive community detection. Unlike Louvain/Leiden/LP/LPAm, which
+        /// build communities up from singletons (agglomerative), this tears the graph down one edge
+        /// at a time. At each step: compute edge betweenness over the currently-remaining edges,
+        /// remove the single highest-betweenness edge, and score the resulting connected-component
+        /// partition by modularity — evaluated against the *original*, un-cut graph, since the
+        /// point is to judge how well that partition explains the original network, not the
+        /// edge-depleted working copy. The partition with the highest modularity seen across every
+        /// removal step (including the trivial all-connected start) is returned. Directed layers are
+        /// symmetrized and multiple layers combine via summed weight, matching every other community
+        /// detection method (<see cref="BuildAdjacency"/>). Edge betweenness here is the unweighted
+        /// (hop-count shortest paths) kind, same convention as CentralityFunctions' node/edge
+        /// betweenness — edge weight only decides which edges exist, not path length. Because a full
+        /// betweenness recomputation is needed after every single edge removal, this is substantially
+        /// more expensive than the agglomerative methods — O(V·E²) in the worst case — so it is best
+        /// suited to smaller networks; the per-removal betweenness pass itself runs in parallel across
+        /// up to 'maxthreads' threads (see 'setting()'). Deterministic given the graph (ties for
+        /// highest betweenness are broken by lowest node-index pair), so unlike the other methods this
+        /// has no numRestarts.
+        /// </summary>
+        internal static (Dictionary<uint, int> communities, double modularity) GirvanNewmanCommunities(
+            uint[] nodeIds, List<ILayerOneMode> layers, double resolution = 1.0)
+        {
+            int n0 = nodeIds.Length;
+            if (n0 == 0)
+                return (new Dictionary<uint, int>(0), 0.0);
+
+            var (neighbors0, weights0, degree0, twoM) = BuildAdjacency(nodeIds, layers);
+
+            if (twoM <= 0)
+            {
+                var singletons = new Dictionary<uint, int>(n0);
+                for (int i = 0; i < n0; i++) singletons[nodeIds[i]] = i;
+                return (singletons, 0.0);
+            }
+
+            // Mutable working copy: edges are progressively removed from this, while neighbors0/
+            // weights0 (and twoM) stay untouched, since modularity is always scored against them.
+            var workAdj = new Dictionary<int, double>[n0];
+            int remainingEdges = 0;
+            for (int u = 0; u < n0; u++)
+            {
+                workAdj[u] = new Dictionary<int, double>(neighbors0[u].Length);
+                for (int k = 0; k < neighbors0[u].Length; k++)
+                {
+                    int v = neighbors0[u][k];
+                    if (v == u) continue; // self-ties never lie on a shortest path between two other nodes
+                    workAdj[u][v] = weights0[u][k];
+                    if (v > u) remainingEdges++;
+                }
+            }
+
+            int[] bestPartition = ConnectedComponentsFromAdjacency(n0, workAdj);
+            double bestModularity = ComputeModularity(n0, neighbors0, weights0, degree0, twoM, resolution, bestPartition);
+
+            while (remainingEdges > 0)
+            {
+                var betweenness = ComputeEdgeBetweenness(n0, workAdj);
+                int bestU = -1, bestV = -1;
+                double bestScore = -1.0;
+                // Deterministic tie-break: iterate in ascending (u,v) order so the first edge to
+                // reach the max score wins, regardless of the parallel merge order inside
+                // ComputeEdgeBetweenness (dictionary iteration order would otherwise depend on it).
+                foreach (var ((u, v), score) in betweenness.OrderBy(kv => kv.Key))
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestU = u; bestV = v;
+                    }
+                if (bestU < 0) break; // no more edges carry any betweenness (shouldn't happen while remainingEdges > 0)
+
+                workAdj[bestU].Remove(bestV);
+                workAdj[bestV].Remove(bestU);
+                remainingEdges--;
+
+                int[] partition = ConnectedComponentsFromAdjacency(n0, workAdj);
+                double modularity = ComputeModularity(n0, neighbors0, weights0, degree0, twoM, resolution, partition);
+                if (modularity > bestModularity)
+                {
+                    bestModularity = modularity;
+                    bestPartition = partition;
+                }
+            }
+
+            var communities = new Dictionary<uint, int>(n0);
+            for (int i = 0; i < n0; i++) communities[nodeIds[i]] = bestPartition[i];
+            return (communities, bestModularity);
+        }
+
         #endregion
 
         #region Methods (private)
@@ -677,6 +766,121 @@ namespace Threadle.Core.Analysis
                 q += sin / twoM - resolution * frac * frac;
             }
             return q;
+        }
+
+        /// <summary>
+        /// Compacted (0-based) connected-component index per node, via plain BFS over the given
+        /// (int-indexed, undirected) adjacency. Used by <see cref="GirvanNewmanCommunities"/> to turn
+        /// the edge-depleted working graph into a candidate partition after each removal.
+        /// </summary>
+        private static int[] ConnectedComponentsFromAdjacency(int n, Dictionary<int, double>[] adj)
+        {
+            int[] component = new int[n];
+            Array.Fill(component, -1);
+            int next = 0;
+            var queue = new Queue<int>();
+            for (int start = 0; start < n; start++)
+            {
+                if (component[start] != -1) continue;
+                component[start] = next;
+                queue.Enqueue(start);
+                while (queue.Count > 0)
+                {
+                    int u = queue.Dequeue();
+                    foreach (int v in adj[u].Keys)
+                        if (component[v] == -1)
+                        {
+                            component[v] = next;
+                            queue.Enqueue(v);
+                        }
+                }
+                next++;
+            }
+            return component;
+        }
+
+        /// <summary>
+        /// Unweighted Brandes edge betweenness over the given (int-indexed, undirected) adjacency —
+        /// only which pairs are adjacent matters, not their weight. Runs the per-source BFS passes in
+        /// parallel across up to 'maxthreads' threads (see 'setting()'), merging thread-local partial
+        /// sums under a lock once per thread's batch — same accumulate+merge pattern as
+        /// CentralityFunctions.AccumulateEdgeBetweennessForSources, just over this module's own
+        /// compact adjacency representation rather than ILayerOneMode.
+        /// </summary>
+        private static Dictionary<(int, int), double> ComputeEdgeBetweenness(int n, Dictionary<int, double>[] adj)
+        {
+            var result = new Dictionary<(int, int), double>();
+            var mergeLock = new object();
+
+            System.Threading.Tasks.Parallel.For(0, n, UserSettings.GetParallelOptions(),
+                () => new Dictionary<(int, int), double>(),
+                (source, loopState, local) =>
+                {
+                    AccumulateEdgeBetweennessFromSource(source, n, adj, local);
+                    return local;
+                },
+                local =>
+                {
+                    lock (mergeLock)
+                    {
+                        foreach (var (edge, value) in local)
+                            result[edge] = result.GetValueOrDefault(edge) + value;
+                    }
+                });
+            return result;
+        }
+
+        /// <summary>
+        /// Single-source unweighted BFS + Brandes backward pass, crediting each predecessor edge on
+        /// the shortest-path DAG with the same per-predecessor contribution term node betweenness
+        /// would fold into the node's delta. Self-loops (v == u) are skipped: they never lie on a
+        /// shortest path between two other nodes.
+        /// </summary>
+        private static void AccumulateEdgeBetweennessFromSource(int source, int n, Dictionary<int, double>[] adj, Dictionary<(int, int), double> edgeBetweenness)
+        {
+            var dist = new int[n];
+            Array.Fill(dist, -1);
+            var sigma = new double[n];
+            var pred = new List<int>?[n];
+            var order = new Stack<int>();
+            var queue = new Queue<int>();
+
+            dist[source] = 0;
+            sigma[source] = 1.0;
+            queue.Enqueue(source);
+            while (queue.Count > 0)
+            {
+                int u = queue.Dequeue();
+                order.Push(u);
+                foreach (int v in adj[u].Keys)
+                {
+                    if (v == u) continue;
+                    if (dist[v] < 0)
+                    {
+                        dist[v] = dist[u] + 1;
+                        queue.Enqueue(v);
+                    }
+                    if (dist[v] == dist[u] + 1)
+                    {
+                        sigma[v] += sigma[u];
+                        (pred[v] ??= []).Add(u);
+                    }
+                }
+            }
+
+            var delta = new double[n];
+            while (order.Count > 0)
+            {
+                int w = order.Pop();
+                if (pred[w] == null) continue;
+                foreach (int v in pred[w]!)
+                {
+                    double contrib = (sigma[v] / sigma[w]) * (1.0 + delta[w]);
+                    delta[v] += contrib;
+                    var edgeKey = v < w ? (v, w) : (w, v);
+                    edgeBetweenness[edgeKey] = edgeBetweenness.GetValueOrDefault(edgeKey) + contrib;
+                }
+            }
         }
 
         private static void Shuffle(int[] arr)
