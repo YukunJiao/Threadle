@@ -316,6 +316,89 @@ public class NodesetTests
         Assert.Contains(1u, nodeset.NodeIdArray);
     }
 
+    // ── RenameNodeAttribute ──────────────────────────────────────────────────
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_Succeeds()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "years");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_OldNameNoLongerLooksUpValue()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.RenameNodeAttribute("age", "years");
+
+        Assert.False(nodeset.GetNodeAttribute(1, "age").Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_ValuePreservedUnderNewName()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.RenameNodeAttribute("age", "years");
+
+        var result = nodeset.GetNodeAttribute(1, "years");
+        Assert.True(result.Success);
+        Assert.Equal(30, result.Value.Value.GetValue(result.Value.Type));
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NonExistentAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        var result = nodeset.RenameNodeAttribute("ghost", "whatever");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NameAlreadyExists_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.DefineNodeAttribute("years", "int");
+        var result = nodeset.RenameNodeAttribute("age", "years");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_SameName_SucceedsAsNoOp()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "age");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_EmptyNewName_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_AfterRename_CanRedefineOldName()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.RenameNodeAttribute("age", "years");
+        var result = nodeset.DefineNodeAttribute("age", "string");
+        Assert.True(result.Success);
+    }
+
     // ── SetNodeAttribute ─────────────────────────────────────────────────────
 
     [Fact]
@@ -854,7 +937,7 @@ public class NodesetTests
         var yAttr = clone.GetNodeAttribute(1, "y");
         Assert.True(xAttr.Success);
         Assert.True(yAttr.Success);
-        Assert.Equal(5,    (int)xAttr.Value.Value.GetValue(xAttr.Value.Type)!);
+        Assert.Equal(5, (int)xAttr.Value.Value.GetValue(xAttr.Value.Type)!);
         Assert.Equal(1.5f, (float)yAttr.Value.Value.GetValue(yAttr.Value.Type)!, 4);
     }
 
@@ -899,9 +982,9 @@ public class NodesetTests
         ns.SetNodeAttribute(1u, "occupation", "doctor");
         ns.SetNodeAttribute(2u, "occupation", "engineer");
         ns.SetNodeAttribute(3u, "occupation", "doctor");
-        Assert.Equal("doctor",   ns.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", ns.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", ns.GetNodeAttributeString(2u, "occupation").Value);
-        Assert.Equal("doctor",   ns.GetNodeAttributeString(3u, "occupation").Value);
+        Assert.Equal("doctor", ns.GetNodeAttributeString(3u, "occupation").Value);
     }
 
     [Fact]
