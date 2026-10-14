@@ -208,6 +208,110 @@ namespace Threadle.Core.Model
 
         #region Methods (public)
         /// <summary>
+        /// Merges two nodesets into a new one: the union of their node ids, and the union of their
+        /// defined node attributes. A node attribute name defined in both sources must have the same
+        /// <see cref="NodeAttributeType"/> in both — a type mismatch always fails the merge, since that
+        /// signals two genuinely different attributes sharing a name by accident. Values are then
+        /// resolved per node and attribute: if only one source has a value set, that value is used; if
+        /// both have a value set and they agree, that value is used; if both have a value set and they
+        /// disagree, <paramref name="onValueConflict"/> decides. A node missing a value in one source is
+        /// never treated as a conflict. Attributes expected to vary between the two sources (e.g. a
+        /// per-period measure like income) should be renamed with their period beforehand, so that only
+        /// genuinely static attributes (e.g. gender, birthyear) remain under a shared name.
+        /// </summary>
+        /// <param name="nodeset1">The first nodeset to merge.</param>
+        /// <param name="nodeset2">The second nodeset to merge.</param>
+        /// <param name="name">The name for the new, merged nodeset.</param>
+        /// <param name="onValueConflict">How to resolve a node attribute value set differently in both sources.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the merged Nodeset.</returns>
+        public static OperationResult<Nodeset> Merge(Nodeset nodeset1, Nodeset nodeset2, string name, AttributeConflictPolicy onValueConflict = AttributeConflictPolicy.Fail)
+        {
+            List<string> names1 = nodeset1.GetDefinedAttributeNames();
+            List<string> names2 = nodeset2.GetDefinedAttributeNames();
+            List<string> allNames = new(names1);
+            foreach (string attrName in names2)
+                if (!allNames.Contains(attrName))
+                    allNames.Add(attrName);
+
+            var attrTypes = new Dictionary<string, NodeAttributeType>();
+            foreach (string attrName in allNames)
+            {
+                var def1 = nodeset1.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(attrName);
+                var def2 = nodeset2.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(attrName);
+                if (def1 is not null && def2 is not null && def1.Value.AttrType != def2.Value.AttrType)
+                    return OperationResult<Nodeset>.Fail("AttributeTypeMismatch", $"Attribute '{attrName}' is defined as '{def1.Value.AttrType}' in nodeset '{nodeset1.Name}' but '{def2.Value.AttrType}' in nodeset '{nodeset2.Name}'; rename one before merging.");
+                attrTypes[attrName] = def1?.AttrType ?? def2!.Value.AttrType;
+            }
+
+            HashSet<uint> allIds = new(nodeset1.NodeIdArray);
+            allIds.UnionWith(nodeset2.NodeIdArray);
+            Nodeset merged = new(name, allIds);
+
+            var mergedIndex = new Dictionary<string, byte>();
+            foreach (string attrName in allNames)
+            {
+                OperationResult<byte> defineResult = merged.DefineNodeAttribute(attrName, attrTypes[attrName]);
+                if (!defineResult.Success)
+                    return OperationResult<Nodeset>.Fail(defineResult);
+                mergedIndex[attrName] = defineResult.Value;
+            }
+
+            foreach (uint id in allIds)
+            {
+                foreach (string attrName in allNames)
+                {
+                    NodeAttributeType type = attrTypes[attrName];
+                    var result1 = nodeset1.GetNodeAttribute(id, attrName);
+                    var result2 = nodeset2.GetNodeAttribute(id, attrName);
+                    bool has1 = result1.Success;
+                    bool has2 = result2.Success;
+                    if (!has1 && !has2)
+                        continue;
+
+                    string? str1 = null, str2 = null;
+                    if (type == NodeAttributeType.String)
+                    {
+                        if (has1)
+                            str1 = nodeset1.GetStringFromPool((int)result1.Value.Value.GetValue(type)!);
+                        if (has2)
+                            str2 = nodeset2.GetStringFromPool((int)result2.Value.Value.GetValue(type)!);
+                    }
+
+                    bool useFirst;
+                    if (has1 && has2)
+                    {
+                        bool equal = type == NodeAttributeType.String
+                            ? str1 == str2
+                            : result1.Value.Value.RawValueAsInt() == result2.Value.Value.RawValueAsInt();
+                        if (equal)
+                            useFirst = true;
+                        else
+                            switch (onValueConflict)
+                            {
+                                case AttributeConflictPolicy.KeepFirst:
+                                    useFirst = true;
+                                    break;
+                                case AttributeConflictPolicy.KeepLast:
+                                    useFirst = false;
+                                    break;
+                                default:
+                                    return OperationResult<Nodeset>.Fail("AttributeValueConflict", $"Node {id} has conflicting values for attribute '{attrName}': '{(type == NodeAttributeType.String ? str1 : result1.Value.Value.ToString(type))}' in '{nodeset1.Name}' vs '{(type == NodeAttributeType.String ? str2 : result2.Value.Value.ToString(type))}' in '{nodeset2.Name}'.");
+                            }
+                    }
+                    else
+                        useFirst = has1;
+
+                    NodeAttributeValue finalValue = type == NodeAttributeType.String
+                        ? new NodeAttributeValue(merged.GetOrAddStringToPool((useFirst ? str1 : str2)!))
+                        : (useFirst ? result1.Value.Value : result2.Value.Value);
+                    merged.SetNodeAttribute(id, mergedIndex[attrName], finalValue);
+                }
+            }
+
+            return OperationResult<Nodeset>.Ok(merged, $"Merged nodesets '{nodeset1.Name}' and '{nodeset2.Name}' into '{name}': {allIds.Count} node(s), {allNames.Count} attribute(s).");
+        }
+
+        /// <summary>
         /// Adds a node with the specified nodeid to this Nodeset. Checks that it doesn't already exist.
         /// Initially the node has no attributes.
         /// </summary>
@@ -307,6 +411,92 @@ namespace Threadle.Core.Model
             if (result.Success)
                 _modified();
             return result;
+        }
+
+        /// <summary>
+        /// Duplicates a node attribute under a new name, copying its type and all currently set
+        /// values for every node that has it set. The original attribute is unaffected.
+        /// </summary>
+        /// <param name="from">The current name of the node attribute to duplicate.</param>
+        /// <param name="to">The name for the new, duplicated node attribute.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult DuplicateNodeAttribute(string from, string to)
+        {
+            var definition = NodeAttributeDefinitionManager.GetNodeAttributeDefinition(from);
+            if (definition is null)
+                return OperationResult.Fail("AttributeUnknown", $"Node attribute '{from}' not found.");
+            byte fromIndex = definition.Value.Index;
+            NodeAttributeType attrType = definition.Value.AttrType;
+            to = to.Trim();
+            if (to.Length < 1)
+                return OperationResult.Fail("MissingAttributeName", "New name of attribute must be at least one character.");
+            if (NodeAttributeDefinitionManager.CheckIfAttributeNameExists(to))
+                return OperationResult.Fail("AttributeAlreadyExists", $"Node attribute named '{to}' already defined.");
+
+            OperationResult<byte> defineResult = DefineNodeAttribute(to, attrType);
+            if (!defineResult.Success)
+                return defineResult;
+            byte toIndex = defineResult.Value;
+
+            foreach (var kvp in _nodesWithAttributes)
+            {
+                int idx = kvp.Value.AttrIndexes.IndexOf(fromIndex);
+                if (idx >= 0)
+                    SetNodeAttribute(kvp.Key, toIndex, kvp.Value.AttrValues[idx]);
+            }
+            _modified();
+            return OperationResult.Ok($"Node attribute '{from}' duplicated as '{to}'.");
+        }
+
+        /// <summary>
+        /// Returns the names of all currently defined node attributes, in definition (index) order.
+        /// </summary>
+        /// <returns>A list of node attribute names.</returns>
+        public List<string> GetDefinedAttributeNames()
+            => NodeAttributeDefinitionManager.GetAllNodeAttributeDefinitions()
+                .OrderBy(d => d.Index)
+                .Select(d => d.AttrName)
+                .ToList();
+
+        /// <summary>
+        /// Returns a table of attribute values for the given nodes and attribute names, one column per
+        /// attribute, each an array parallel to <paramref name="nodeIds"/>. Used by getattrstable() as the
+        /// bulk-export counterpart to importnodeattributes(). A node lacking a value for an attribute (or
+        /// not present in the nodeset at all) gets a null entry for that attribute, rather than failing.
+        /// </summary>
+        /// <param name="nodeIds">The node ids to include, one row per id (in the given order).</param>
+        /// <param name="attrNames">The attribute names to include as columns, or null for all currently defined attributes.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the requested columns.</returns>
+        public OperationResult<Dictionary<string, object?[]>> GetNodeAttributesTable(uint[] nodeIds, string[]? attrNames)
+        {
+            string[] names = attrNames ?? GetDefinedAttributeNames().ToArray();
+            var defs = new (byte Index, NodeAttributeType Type)[names.Length];
+            for (int a = 0; a < names.Length; a++)
+            {
+                if (!NodeAttributeDefinitionManager.TryGetAttributeIndex(names[a], out byte idx) ||
+                    !NodeAttributeDefinitionManager.TryGetAttributeType(idx, out NodeAttributeType type))
+                    return OperationResult<Dictionary<string, object?[]>>.Fail("AttributeUnknown", $"Unknown attribute '{names[a]}' in nodeset '{Name}'.");
+                defs[a] = (idx, type);
+            }
+
+            var columns = new Dictionary<string, object?[]>();
+            for (int a = 0; a < names.Length; a++)
+                columns[names[a]] = new object?[nodeIds.Length];
+
+            for (int i = 0; i < nodeIds.Length; i++)
+            {
+                uint nodeId = nodeIds[i];
+                for (int a = 0; a < names.Length; a++)
+                {
+                    NodeAttributeValue? value = GetNodeAttribute(nodeId, defs[a].Index);
+                    columns[names[a]][i] = value is NodeAttributeValue nav
+                        ? (defs[a].Type == NodeAttributeType.String
+                            ? GetStringFromPool((int)nav.GetValue(defs[a].Type)!)
+                            : nav.GetValue(defs[a].Type))
+                        : null;
+                }
+            }
+            return OperationResult<Dictionary<string, object?[]>>.Ok(columns, $"Returning attribute table for {nodeIds.Length} node(s) and {names.Length} attribute(s).");
         }
 
         /// <summary>

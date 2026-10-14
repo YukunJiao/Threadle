@@ -86,6 +86,45 @@ namespace Threadle.Core.Model
 
         #region Methods (public)
         /// <summary>
+        /// Merges two networks into a new one: their nodesets are merged via <see cref="Nodeset.Merge"/>
+        /// (see that method for how attribute definitions and values are resolved), and every layer from
+        /// both networks is copied into the merged network over that unified nodeset. A layer name that
+        /// occurs in both networks is kept side-by-side rather than combined: the second one encountered
+        /// is suffixed with its source network's name (e.g. 'kinship_net2024') so both survive distinctly.
+        /// Consider renaming a layer with a more meaningful period/source label before merging rather than
+        /// relying on this automatic suffix, the same way per-period node attributes should be renamed
+        /// before merging nodesets.
+        /// </summary>
+        /// <param name="network1">The first network to merge.</param>
+        /// <param name="network2">The second network to merge.</param>
+        /// <param name="name">The name for the new, merged network (and its merged nodeset).</param>
+        /// <param name="onValueConflict">How to resolve a node attribute value set differently in both networks' nodesets.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, with the merged Network.</returns>
+        public static OperationResult<Network> Merge(Network network1, Network network2, string name, AttributeConflictPolicy onValueConflict = AttributeConflictPolicy.Fail)
+        {
+            OperationResult<Nodeset> nodesetResult = Nodeset.Merge(network1.Nodeset, network2.Nodeset, name, onValueConflict);
+            if (!nodesetResult.Success)
+                return OperationResult<Network>.Fail(nodesetResult);
+            Nodeset mergedNodeset = nodesetResult.Value!;
+            Network merged = new(name, mergedNodeset);
+
+            foreach (Network source in new[] { network1, network2 })
+            {
+                foreach (var (layerName, layer) in source.Layers)
+                {
+                    string targetName = merged.Layers.ContainsKey(layerName) ? $"{layerName}_{source.Name}" : layerName;
+                    ILayer copy = layer.CreateFilteredCopy(mergedNodeset);
+                    copy.Name = targetName;
+                    OperationResult addResult = merged.AddLayer(targetName, copy);
+                    if (!addResult.Success)
+                        return OperationResult<Network>.Fail("LayerAlreadyExists", $"Layer '{layerName}' from network '{source.Name}' could not be added as '{targetName}': {addResult.Message} Rename it before merging.");
+                }
+            }
+
+            return OperationResult<Network>.Ok(merged, $"Merged networks '{network1.Name}' and '{network2.Name}' into '{name}': {merged.Layers.Count} layer(s).");
+        }
+
+        /// <summary>
         /// Creates a layer of 1-mode relations (see <see cref="LayerOneMode"/>) with the specified name and relational properties.
         /// </summary>
         /// <param name="layerName">The name of the layer.</param>
@@ -149,6 +188,31 @@ namespace Threadle.Core.Model
             Layers[to] = layer;
             IsModified = true;
             return OperationResult.Ok($"Layer '{from}' renamed to '{to}' in network '{Name}'.");
+        }
+
+        /// <summary>
+        /// Duplicates a layer under a new name. All edges and layer properties (directionality,
+        /// value type and selfties for 1-mode; hyperedges for 2-mode) are copied; the original
+        /// layer is unaffected.
+        /// </summary>
+        /// <param name="from">The name of the existing layer to duplicate.</param>
+        /// <param name="to">The name for the new, duplicated layer.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public OperationResult DuplicateLayer(string from, string to)
+        {
+            var layerResult = GetLayer(from);
+            if (!layerResult.Success)
+                return layerResult;
+            to = to.Trim();
+            if (string.IsNullOrEmpty(to))
+                return OperationResult.Fail("InvalidLayerName", "Layer name cannot be empty.");
+            if (Layers.ContainsKey(to))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer with name '{to}' already exists.");
+            ILayer copy = layerResult.Value!.CreateFilteredCopy(Nodeset);
+            copy.Name = to;
+            Layers[to] = copy;
+            IsModified = true;
+            return OperationResult.Ok($"Layer '{from}' duplicated as '{to}' in network '{Name}'.");
         }
 
         /// <summary>
@@ -807,7 +871,7 @@ namespace Threadle.Core.Model
 
         public OperationResult Unpack(string? layerName)
         {
-            if (layerName!=null)
+            if (layerName != null)
             {
                 if (_getLayer(layerName) is not ILayer layer)
                     return OperationResult.Fail("LayerNotFound", $"No layer with name '{layerName}' found.");

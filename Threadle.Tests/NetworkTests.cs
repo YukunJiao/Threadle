@@ -185,6 +185,208 @@ public class NetworkTests
         Assert.True(net.Layers.ContainsKey(layer));
     }
 
+    // ── DuplicateLayer ───────────────────────────────────────────────────────────
+
+    [Fact]
+    public void DuplicateLayer_NewName_Succeeds()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        var result = net.DuplicateLayer(layer, "besties");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateLayer_NewName_OriginalAndCopyBothExist()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        net.DuplicateLayer(layer, "besties");
+
+        Assert.True(net.Layers.ContainsKey(layer));
+        Assert.True(net.Layers.ContainsKey("besties"));
+        Assert.Equal("besties", net.Layers["besties"].Name);
+    }
+
+    [Fact]
+    public void DuplicateLayer_CopiesEdges()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        net.AddEdge(layer, 1, 2);
+        net.DuplicateLayer(layer, "besties");
+
+        Assert.True(net.CheckEdgeExists("besties", 1, 2).Value);
+    }
+
+    [Fact]
+    public void DuplicateLayer_PreservesLayerProperties()
+    {
+        var (net, layer) = MakeNetworkWithDirectedLayer();
+        net.DuplicateLayer(layer, "copy");
+
+        var original = (LayerOneMode)net.Layers[layer];
+        var copy = (LayerOneMode)net.Layers["copy"];
+        Assert.Equal(original.Directionality, copy.Directionality);
+        Assert.Equal(original.EdgeValueType, copy.EdgeValueType);
+        Assert.Equal(original.Selfties, copy.Selfties);
+    }
+
+    [Fact]
+    public void DuplicateLayer_EditingCopyDoesNotAffectOriginal()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        net.AddEdge(layer, 1, 2);
+        net.DuplicateLayer(layer, "besties");
+        net.AddEdge("besties", 2, 3);
+
+        Assert.False(net.CheckEdgeExists(layer, 2, 3).Value);
+        Assert.True(net.CheckEdgeExists("besties", 2, 3).Value);
+    }
+
+    [Fact]
+    public void DuplicateLayer_TwoModeLayer_CopiesHyperedges()
+    {
+        var net = MakeNetwork();
+        net.AddLayerTwoMode("clubs");
+        net.AddHyperedge("clubs", "chess", [1, 2]);
+        net.DuplicateLayer("clubs", "clubscopy");
+
+        var hyperedges = net.GetAllHyperedges("clubscopy");
+        Assert.True(hyperedges.Success);
+        Assert.Contains("chess", hyperedges.Value!);
+    }
+
+    [Fact]
+    public void DuplicateLayer_NonExistentLayer_Fails()
+    {
+        var net = MakeNetwork();
+        var result = net.DuplicateLayer("ghost", "whatever");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateLayer_NameAlreadyExists_Fails()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        net.AddLayerOneMode("taken", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        var result = net.DuplicateLayer(layer, "taken");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateLayer_SameNameAsOriginal_Fails()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        var result = net.DuplicateLayer(layer, layer);
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateLayer_EmptyNewName_Fails()
+    {
+        var (net, layer) = MakeNetworkWithUndirectedLayer();
+        var result = net.DuplicateLayer(layer, "   ");
+        Assert.False(result.Success);
+    }
+
+    // ── Merge ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Merge_DifferentLayerNames_BothKeptAsIs()
+    {
+        var net1 = MakeNetwork();
+        net1.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        var net2 = MakeNetwork();
+        net2.AddLayerOneMode("family", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.True(result.Success);
+        Assert.True(result.Value!.Layers.ContainsKey("friends"));
+        Assert.True(result.Value!.Layers.ContainsKey("family"));
+    }
+
+    [Fact]
+    public void Merge_SameLayerName_SecondSuffixedWithSourceNetworkName()
+    {
+        var nodeset1 = new Nodeset("ns1");
+        nodeset1.AddNode(1);
+        nodeset1.AddNode(2);
+        var net1 = new Network("net2023", nodeset1);
+        net1.AddLayerOneMode("kinship", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var nodeset2 = new Nodeset("ns2");
+        nodeset2.AddNode(1);
+        nodeset2.AddNode(2);
+        var net2 = new Network("net2024", nodeset2);
+        net2.AddLayerOneMode("kinship", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.True(result.Success);
+        Assert.True(result.Value!.Layers.ContainsKey("kinship"));
+        Assert.True(result.Value!.Layers.ContainsKey("kinship_net2024"));
+    }
+
+    [Fact]
+    public void Merge_CopiesEdgesFromBothSourceLayers()
+    {
+        var net1 = MakeNetwork();
+        net1.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net1.AddEdge("friends", 1, 2);
+        var net2 = MakeNetwork();
+        net2.AddLayerOneMode("family", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net2.AddEdge("family", 1, 3);
+
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.True(result.Success);
+        Assert.True(result.Value!.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(result.Value!.CheckEdgeExists("family", 1, 3).Value);
+    }
+
+    [Fact]
+    public void Merge_UnifiesNodesets()
+    {
+        var nodeset1 = new Nodeset("ns1");
+        nodeset1.AddNode(1);
+        nodeset1.AddNode(2);
+        var net1 = new Network("net1", nodeset1);
+        net1.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var nodeset2 = new Nodeset("ns2");
+        nodeset2.AddNode(2);
+        nodeset2.AddNode(3);
+        var net2 = new Network("net2", nodeset2);
+        net2.AddLayerOneMode("family", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.True(result.Success);
+        Assert.Contains(1u, result.Value!.Nodeset.NodeIdArray);
+        Assert.Contains(2u, result.Value!.Nodeset.NodeIdArray);
+        Assert.Contains(3u, result.Value!.Nodeset.NodeIdArray);
+    }
+
+    [Fact]
+    public void Merge_NodesetAttributeTypeMismatch_Fails()
+    {
+        var nodeset1 = new Nodeset("ns1");
+        nodeset1.DefineNodeAttribute("age", "int");
+        var net1 = new Network("net1", nodeset1);
+
+        var nodeset2 = new Nodeset("ns2");
+        nodeset2.DefineNodeAttribute("age", "string");
+        var net2 = new Network("net2", nodeset2);
+
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Merge_ResultHasGivenName()
+    {
+        var net1 = MakeNetwork();
+        var net2 = MakeNetwork();
+        var result = Network.Merge(net1, net2, "merged");
+        Assert.True(result.Success);
+        Assert.Equal("merged", result.Value!.Name);
+    }
+
     // ── ClearLayer ───────────────────────────────────────────────────────────────
 
     [Fact]
