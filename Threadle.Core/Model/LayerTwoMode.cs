@@ -565,11 +565,7 @@ namespace Threadle.Core.Model
         internal void _deduplicateHyperedges()
         {
             foreach (Hyperedge hyperedge in AllHyperEdges.Values)
-            {
-                List<uint> distinct = hyperedge.NodeIds.Distinct().ToList();
-                if (distinct.Count != hyperedge.NodeIds.Count)
-                    hyperedge.SetNodeIds(distinct);
-            }
+                Misc.DeduplicateUintList(hyperedge.NodeIds);
         }
 
         /// <summary>
