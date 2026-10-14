@@ -711,7 +711,9 @@ namespace Threadle.Core.Analysis
         /// and stores the result as a float node attribute. Only 1-mode layers are accepted;
         /// 2-mode layers must be projected first via ProjectTwoModeToOneMode().
         /// Auto-selects formula based on layer type (directed/undirected, binary/valued) unless
-        /// method is specified explicitly.
+        /// method is specified explicitly. The Onnela method is refused for any layer where
+        /// selfties are allowed, even if it has none, since its normalization by the global
+        /// maximum edge weight does not currently scan self-tie values.
         /// When multiple layers are specified, adjacency is the union across all layers.
         /// Each node's coefficient is independent of every other's, so the per-node computations
         /// run in parallel across up to 'maxthreads' threads (see 'setting()').
@@ -729,7 +731,13 @@ namespace Threadle.Core.Analysis
                     if (layer is ILayerTwoMode)
                         return OperationResult.Fail("InvalidLayerType",
                             $"Layer '{name}' is a 2-mode layer. Clustering coefficient is not defined for 2-mode layers — use projecttwomodetoonemode() first, or specify only 1-mode layers.");
-                    if (layer is ILayerOneMode lom) oneModes.Add(lom);
+                    if (layer is ILayerOneMode lom)
+                    {
+                        if (method == ClusteringMethod.Onnela && lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Onnela's normalization (dividing by the global maximum edge weight) does not currently scan self-tie values when finding that maximum, so it is refused for any layer where selfties are allowed — even if none are actually present. Use a different method (e.g. 'barrat') for layers that permit selfties.");
+                        oneModes.Add(lom);
+                    }
                 }
             }
             else
@@ -741,7 +749,13 @@ namespace Threadle.Core.Analysis
                     if (lr.Value is ILayerTwoMode)
                         return OperationResult.Fail("InvalidLayerType",
                             $"Layer '{name}' is a 2-mode layer. Clustering coefficient is not defined for 2-mode layers — use projecttwomodetoonemode() first.");
-                    if (lr.Value is ILayerOneMode lom) oneModes.Add(lom);
+                    if (lr.Value is ILayerOneMode lom)
+                    {
+                        if (method == ClusteringMethod.Onnela && lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Onnela's normalization (dividing by the global maximum edge weight) does not currently scan self-tie values when finding that maximum, so it is refused for any layer where selfties are allowed — even if none are actually present. Use a different method (e.g. 'barrat') for layers that permit selfties.");
+                        oneModes.Add(lom);
+                    }
                 }
             }
             if (oneModes.Count == 0)

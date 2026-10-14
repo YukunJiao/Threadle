@@ -2919,6 +2919,47 @@ public class AnalysesTests
         Assert.False(result.Success);
     }
 
+    [Fact]
+    public void ClusteringCoefficient_OnnelaOnLayerAllowingSelfties_FailsEvenWithoutAnySelfLoopEdge()
+    {
+        // Onnela normalizes by the global maximum edge weight, which does not currently scan
+        // self-tie values - so the method is refused for any layer where selfties are merely
+        // allowed, regardless of whether one is actually present.
+        var net = MakeNetwork(4);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("layer", 1, 2, 2.0f);
+
+        var result = Analyses.ClusteringCoefficient(net, new[] { "layer" }, "cc", ClusteringMethod.Onnela);
+        Assert.False(result.Success);
+        Assert.Equal("LayerAllowsSelfties", result.Code);
+    }
+
+    [Fact]
+    public void ClusteringCoefficient_OnnelaOnLayerWithoutSelfties_StillSucceeds()
+    {
+        var net = MakeNetwork(4);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddEdge("layer", 1, 2, 2.0f);
+        net.AddEdge("layer", 1, 3, 3.0f);
+        net.AddEdge("layer", 2, 3, 1.0f);
+
+        var result = Analyses.ClusteringCoefficient(net, new[] { "layer" }, "cc", ClusteringMethod.Onnela);
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void ClusteringCoefficient_BarratOnLayerAllowingSelfties_StillSucceeds()
+    {
+        // Only Onnela is refused for selfties - Barrat doesn't rely on the affected
+        // max-edge-weight scan, so it should be unaffected.
+        var net = MakeNetwork(4);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("layer", 1, 2, 2.0f);
+
+        var result = Analyses.ClusteringCoefficient(net, new[] { "layer" }, "cc", ClusteringMethod.Barrat);
+        Assert.True(result.Success);
+    }
+
     [Theory]
     [InlineData(ClusteringMethod.WattsStrogatz)]
     [InlineData(ClusteringMethod.Fagiolo)]
