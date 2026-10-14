@@ -559,6 +559,24 @@ public class NodesetTests
         Assert.Equal("merged", result.Value!.Name);
     }
 
+    [Fact]
+    public void Merge_FloatZeroAndNegativeZero_AreNotAConflict()
+    {
+        // 0.0 and -0.0 have different bit patterns but are the same value: must not be flagged
+        // as a value conflict even under the default onvalueconflict='fail' policy.
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("score", "float");
+        ns1.SetNodeAttribute(1, "score", "0.0");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("score", "float");
+        ns2.SetNodeAttribute(1, "score", "-0.0");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+    }
+
     // ── DuplicateNodeAttribute ────────────────────────────────────────────────
 
     [Fact]

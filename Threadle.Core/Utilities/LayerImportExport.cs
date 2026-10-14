@@ -283,6 +283,8 @@ namespace Threadle.Core.Utilities
                 throw new FileNotFoundException($"File not found: {filepath}");
             string[,] cells = ReadCells(filepath, separator);
             int nbrRows = cells.GetLength(0), nbrCols = cells.GetLength(1);
+            if (nbrRows == 0 || nbrCols == 0)
+                throw new Exception($"File '{filepath}' is empty.");
             if (nbrRows != nbrCols)
                 throw new Exception($"Number of rows ({nbrRows}) different than number of columns ({nbrCols}) in file '{filepath}'");
             uint?[] rowIds = new uint?[nbrRows - 1];
@@ -369,6 +371,8 @@ namespace Threadle.Core.Utilities
                     continue;
                 layerTwoMode._addAffiliation(nodeId, hyperedgeName);
             }
+            // Deduplicate hyperedge memberships (e.g. the same node-affiliation row appearing twice)
+            layerTwoMode._deduplicateHyperedges();
         }
 
         /// <summary>
@@ -399,6 +403,8 @@ namespace Threadle.Core.Utilities
                 throw new FileNotFoundException($"File not found: {filepath}");
             string[,] cells = ReadCells(filepath, separator);
             int nbrRows = cells.GetLength(0), nbrCols = cells.GetLength(1);
+            if (nbrRows == 0 || nbrCols == 0)
+                throw new Exception($"File '{filepath}' is empty.");
             uint?[] rowIds = new uint?[nbrRows - 1];
             string[] colNames = new string[nbrCols - 1];
             for (int i = 1; i < nbrRows; i++)

@@ -280,9 +280,16 @@ namespace Threadle.Core.Model
                     bool useFirst;
                     if (has1 && has2)
                     {
-                        bool equal = type == NodeAttributeType.String
-                            ? str1 == str2
-                            : result1.Value.Value.RawValueAsInt() == result2.Value.Value.RawValueAsInt();
+                        // Float must compare by numeric value, not raw bit pattern: 0.0 and -0.0
+                        // have different bits but are the same value and must not be flagged as
+                        // a conflict. Int/Bool/Char have no such distinct-bits-same-value case, so
+                        // the cheaper bitwise comparison is still used for them.
+                        bool equal = type switch
+                        {
+                            NodeAttributeType.String => str1 == str2,
+                            NodeAttributeType.Float => (float)result1.Value.Value.GetValue(type)! == (float)result2.Value.Value.GetValue(type)!,
+                            _ => result1.Value.Value.RawValueAsInt() == result2.Value.Value.RawValueAsInt()
+                        };
                         if (equal)
                             useFirst = true;
                         else

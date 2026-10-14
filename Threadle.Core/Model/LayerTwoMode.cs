@@ -555,6 +555,24 @@ namespace Threadle.Core.Model
         }
 
         /// <summary>
+        /// Goes through all Hyperedges in the layer and removes any duplicate node ids from their
+        /// membership lists. Used after import, where it is more likely to encounter a duplicate
+        /// node-affiliation entry (e.g. the same row appearing twice in a source file, or several
+        /// repeated node ids within one hyperedge's member list) since the fast, unchecked
+        /// _addHyperedge()/_addAffiliation() paths used by importers trust the data as given.
+        /// Mirrors LayerOneMode._deduplicateEdgesets() for the 2-mode case.
+        /// </summary>
+        internal void _deduplicateHyperedges()
+        {
+            foreach (Hyperedge hyperedge in AllHyperEdges.Values)
+            {
+                List<uint> distinct = hyperedge.NodeIds.Distinct().ToList();
+                if (distinct.Count != hyperedge.NodeIds.Count)
+                    hyperedge.SetNodeIds(distinct);
+            }
+        }
+
+        /// <summary>
         /// Remove an affiliation between a specific node and a hyperedge. If the node is not affiliated with the hyperedge,
         /// i.e. something is internally wrong, then just continue as normal. Otherwise, remove the node id from the hyperedge
         /// and remove the nodal reference to this hyperedge.
