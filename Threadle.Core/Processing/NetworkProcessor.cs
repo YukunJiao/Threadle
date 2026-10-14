@@ -189,6 +189,12 @@ namespace Threadle.Core.Processing
                 foreach (uint partnerId in alters.Span)
                     pairs.Add((nodeId, partnerId));
 
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (oneModeA.IsSymmetric && (oneModeA.Selfties || oneModeB.Selfties))
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (oneModeA.CheckEdgeExists(nodeId, nodeId) || oneModeB.CheckEdgeExists(nodeId, nodeId))
+                        pairs.Add((nodeId, nodeId));
+
             foreach (var (node1, node2) in pairs)
             {
                 float valA = oneModeA.GetEdgeValue(node1, node2);
@@ -365,6 +371,26 @@ namespace Threadle.Core.Processing
                             newLayer._addEdge(nodeId, alters.Span[i], valueToAssign);
                     }
                 }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (originalLayer.IsSymmetric && originalLayer.Selfties)
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (originalLayer.CheckEdgeExists(nodeId, nodeId))
+                    {
+                        float edgeValue = originalLayer.GetEdgeValue(nodeId, nodeId);
+                        if (Misc.CompareValues<float>(edgeValue, threshold, conditionType))
+                        {
+                            float valueToAssign = float.IsNaN(trueValue) ? edgeValue : trueValue;
+                            newLayer._addEdge(nodeId, nodeId, valueToAssign);
+                        }
+                        else
+                        {
+                            float valueToAssign = float.IsNaN(falseValue) ? edgeValue : falseValue;
+                            if (!IsZeroOrOne(valueToAssign) || valueToAssign != 0f)
+                                newLayer._addEdge(nodeId, nodeId, valueToAssign);
+                        }
+                    }
+
             newLayer._sortEdgesets();
             newLayer._deduplicateEdgesets();
             network.AddLayer(newLayerName, newLayer);

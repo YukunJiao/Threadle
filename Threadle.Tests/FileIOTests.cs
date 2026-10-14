@@ -1,6 +1,7 @@
 using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Utilities;
+using Threadle.Core.Utilities.Enums;
 
 namespace Threadle.Tests;
 
@@ -404,6 +405,26 @@ public class FileIOTests : IDisposable
         Assert.True(edgeCheck.Value);
     }
 
+    [Fact]
+    public void SaveLoadNetwork_Tsv_SelfLoopInUndirectedLayer_IsPreserved()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".tsv");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".tsv");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network").Value!.MainStructure;
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+    }
+
     // ── Network save/load (BIN) ────────────────────────────────────────────────
 
     [Fact]
@@ -530,6 +551,100 @@ public class FileIOTests : IDisposable
         Assert.True(loadedNet.CheckEdgeExists("follows", 3, 4).Value);
         Assert.False(loadedNet.CheckEdgeExists("follows", 4, 3).Value);  // directed
         Assert.Equal(0.8f, loadedNet.GetEdge("trust", 1, 3).Value, precision: 4);
+    }
+
+    // ── Binary network: self-loops in undirected layers ───────────────────────
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedLayer_PreservedUnpacked()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.False(loadedNet.Layers["friends"].IsStatic);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedLayer_PreservedPacked()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: true).Value!.MainStructure;
+
+        Assert.True(loadedNet.Layers["friends"].IsStatic);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedValuedLayer_ValuePreserved()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 7.5f);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+        Assert.Equal(7.5f, loadedNet.GetEdge("trust", 1, 1).Value, precision: 4);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_NodeWithOnlySelfLoop_StillHasExactlyOneEdgeNotTwo()
+    {
+        // A node whose only tie is a self-loop is invisible to GetAllEgoData() entirely for
+        // symmetric layers; this also exercises the half-adjacency expansion guard in
+        // LayerOneModeStatic.FromBinaryNodelistRows, which must add a self-loop row only once.
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNetPacked = (Network)FileManager.Load(netPath, "network", packLayers: true).Value!.MainStructure;
+        Assert.True(loadedNetPacked.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.Equal(1UL, ((ILayerOneMode)loadedNetPacked.Layers["friends"]).NbrEdges);
+        // Guards against LayerOneModeStatic.FromBinaryNodelistRows double-adding a self-loop
+        // while expanding half-adjacency to full-adjacency: node 1 must list itself exactly once.
+        Assert.Equal(new uint[] { 1 }, ((ILayerOneMode)loadedNetPacked.Layers["friends"]).GetNodeAlters(1, EdgeTraversal.Out));
+
+        var loadedNetUnpacked = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+        Assert.True(loadedNetUnpacked.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.Equal(1UL, ((ILayerOneMode)loadedNetUnpacked.Layers["friends"]).NbrEdges);
+        Assert.Equal(new uint[] { 1 }, ((ILayerOneMode)loadedNetUnpacked.Layers["friends"]).GetNodeAlters(1, EdgeTraversal.Out));
     }
 
     // ── Binary network: 2-mode layer ──────────────────────────────────────────
@@ -982,6 +1097,25 @@ public class FileIOTests : IDisposable
     }
 
     [Fact]
+    public void ExportLayerEdgelist_UndirectedBinaryWithSelfLoop_IncludesSelfLoopRow()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(2, lines.Length);
+        Assert.Contains(lines, l => l == "1,2");
+        Assert.Contains(lines, l => l == "1,1");
+    }
+
+    [Fact]
     public void ExportLayerEdgelist_StaticOneModeValued_WritesThreeColumns()
     {
         var ns = MakeNodeset();
@@ -1188,6 +1322,62 @@ public class FileIOTests : IDisposable
         Assert.Equal("1,0,1,0", lines[1]);
         Assert.Equal("2,1,0,1", lines[2]);
         Assert.Equal("3,0,1,0", lines[3]);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_UndirectedBinaryWithSelfLoop_DiagonalPopulated()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(",1,2", lines[0]);
+        Assert.Equal("1,1,1", lines[1]); // diagonal self-loop, plus the tie to node 2
+        Assert.Equal("2,1,0", lines[2]);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_NodeWithOnlySelfLoop_AppearsAsRowAndColumn()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(",1", lines[0]);
+        Assert.Equal("1,1", lines[1]);
+    }
+
+    // ── GEXF export ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ExportGexf_UndirectedBinaryWithSelfLoop_IncludesSelfLoopEdge()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".gexf");
+        var result = FileManager.ExportNetworkToFile(net, ExportFormat.Gexf, "friends", path);
+
+        Assert.True(result.Success);
+        string content = File.ReadAllText(path);
+        Assert.Contains("source=\"1\" target=\"2\"", content);
+        Assert.Contains("source=\"1\" target=\"1\"", content);
     }
 
     // ── Layer count > 255 (version 2 binary format) ───────────────────────────

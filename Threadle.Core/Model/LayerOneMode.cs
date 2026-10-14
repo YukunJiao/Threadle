@@ -94,7 +94,19 @@ namespace Threadle.Core.Model
                 ulong nbrConnections = 0;
                 foreach ((uint nodeId, IEdgeset edgeset) in Edgesets)
                     nbrConnections += edgeset.NbrEdges;
-                return Directionality == EdgeDirectionality.Directed ? nbrConnections : nbrConnections / 2;
+                if (Directionality == EdgeDirectionality.Directed)
+                    return nbrConnections;
+
+                // Undirected: an ordinary edge is stored once per endpoint (so divide the total by
+                // 2), but a self-loop is stored only once overall (on its one node), so it must not
+                // be halved along with everything else.
+                if (!Selfties)
+                    return nbrConnections / 2;
+                ulong selfLoopCount = 0;
+                foreach ((uint nodeId, IEdgeset edgeset) in Edgesets)
+                    if (edgeset.CheckOutboundPartnerEdgeExists(nodeId))
+                        selfLoopCount++;
+                return (nbrConnections - selfLoopCount) / 2 + selfLoopCount;
             }
         }
 
@@ -148,6 +160,15 @@ namespace Threadle.Core.Model
                     layer._addBinaryEdges(egoId, alters.ToArray());
                 }
             }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly, once
+            // each, via _addEdge (which correctly guards against double-adding a tie whose two
+            // endpoints are the same node, unlike _addBinaryEdges/_addValuedEdges above).
+            if (source.IsSymmetric && source.Selfties)
+                foreach (uint nodeId in source.NodeIds)
+                    if (source.CheckEdgeExists(nodeId, nodeId))
+                        layer._addEdge(nodeId, nodeId, source.GetEdgeValue(nodeId, nodeId));
+
             return layer;
         }
 

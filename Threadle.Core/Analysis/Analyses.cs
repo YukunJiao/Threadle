@@ -854,7 +854,7 @@ namespace Threadle.Core.Analysis
             if (!layer.IsValued)
                 return OperationResult<Dictionary<string, object>>.Fail("LayerNotValued", $"Layer '{layerName}' is binary — getlayerstats() requires a valued layer.");
 
-            List<float> values = Functions.GetLayerEdgeValues(layer);
+            List<float> values = Functions.GetLayerEdgeValues(layer, network.Nodeset.NodeIdArray);
             var stats = Functions.CalculateValueStatistics(values);
             stats["LayerName"] = layerName;
             stats["EdgeCount"] = values.Count;

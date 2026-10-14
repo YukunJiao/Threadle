@@ -21,7 +21,8 @@ namespace Threadle.Core.Utilities
         /// <param name="sep">The separator to use</param>
         /// <param name="header">Boolean whether the first line is to contain headers.</param>
         /// <param name="idToLabel">Formats a node id for output (plain numeric id, or a node attribute value when 'labelattr' is used).</param>
-        internal static void ExportOneModeEdgeList(ILayerOneMode layerOneMode, string filepath, char sep, bool header, Func<uint, string> idToLabel)
+        /// <param name="nodeset">The layer's Nodeset, needed to find self-loops in symmetric layers (GetAllEgoData() never yields them). If null, self-loops are skipped.</param>
+        internal static void ExportOneModeEdgeList(ILayerOneMode layerOneMode, string filepath, char sep, bool header, Func<uint, string> idToLabel, Nodeset? nodeset = null)
         {
             using var writer = new StreamWriter(filepath);
 
@@ -45,6 +46,17 @@ namespace Threadle.Core.Utilities
                         if (layerOneMode.IsDirectional || alters.Span[i] > egoId)
                             writer.WriteLine($"{idToLabel(egoId)}{sep}{idToLabel(alters.Span[i])}{sep}{values.Span[i]}");
             }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (nodeset != null && !layerOneMode.IsDirectional && layerOneMode.Selfties)
+                foreach (uint nodeId in nodeset.NodeIdArray)
+                    if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                    {
+                        if (layerOneMode.IsBinary)
+                            writer.WriteLine($"{idToLabel(nodeId)}{sep}{idToLabel(nodeId)}");
+                        else
+                            writer.WriteLine($"{idToLabel(nodeId)}{sep}{idToLabel(nodeId)}{sep}{layerOneMode.GetEdgeValue(nodeId, nodeId)}");
+                    }
         }
 
         /// <summary>
@@ -72,7 +84,8 @@ namespace Threadle.Core.Utilities
         /// <param name="sep">The separator to use</param>
         /// <param name="header">Boolean whether the first row/column are to contain headers.</param>
         /// <param name="idToLabel">Formats a node id for output (plain numeric id, or a node attribute value when 'labelattr' is used).</param>
-        internal static void ExportOneModeMatrix(ILayerOneMode layerOneMode, string filepath, char sep, bool header, Func<uint, string> idToLabel)
+        /// <param name="nodeset">The layer's Nodeset, needed to find self-loops in symmetric layers (GetAllEgoData() never yields them), including a node whose only tie is a self-loop. If null, self-loops are skipped.</param>
+        internal static void ExportOneModeMatrix(ILayerOneMode layerOneMode, string filepath, char sep, bool header, Func<uint, string> idToLabel, Nodeset? nodeset = null)
         {
             var nodeIdSet = new HashSet<uint>();
             var edgeLookup = new Dictionary<(uint from, uint to), float>();
@@ -91,6 +104,15 @@ namespace Threadle.Core.Utilities
                         edgeLookup[(alterId, egoId)] = val;
                 }
             }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (nodeset != null && !layerOneMode.IsDirectional && layerOneMode.Selfties)
+                foreach (uint nodeId in nodeset.NodeIdArray)
+                    if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                    {
+                        nodeIdSet.Add(nodeId);
+                        edgeLookup[(nodeId, nodeId)] = layerOneMode.GetEdgeValue(nodeId, nodeId);
+                    }
 
             uint[] nodeIds = [.. nodeIdSet.OrderBy(id => id)];
             using var writer = new StreamWriter(filepath);

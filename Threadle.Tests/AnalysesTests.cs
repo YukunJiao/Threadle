@@ -90,6 +90,22 @@ public class AnalysesTests
     }
 
     [Fact]
+    public void Density_UndirectedGraphWithSelfLoop_CountsSelfLoopAsOneEdge()
+    {
+        // 3 nodes, selfties allowed: possible edges = 3*(3+1)/2 = 6. One self-loop (1,1) and
+        // one ordinary edge (1,2) → 2 actual edges → density = 2/6. Regression: NbrEdges used to
+        // halve the self-loop away, undercounting the numerator.
+        var net = MakeNetwork(3);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.Density(net, "layer");
+        Assert.True(result.Success);
+        Assert.Equal(2.0 / 6.0, result.Value, precision: 6);
+    }
+
+    [Fact]
     public void Density_PartialUndirectedGraph_ReturnsCorrectValue()
     {
         // 4 nodes, 3 of 6 possible edges → density = 0.5
@@ -448,6 +464,23 @@ public class AnalysesTests
         Assert.True(result.Success);
         Assert.Equal(2, (int)result.Value!["EdgeCount"]);
         Assert.Equal(15.0, (double)result.Value!["Mean"], precision: 5);
+    }
+
+    [Fact]
+    public void GetLayerStats_UndirectedLayerWithSelfLoop_IncludesSelfLoopValueOnce()
+    {
+        // 1-2 (value 2), plus a self-loop on node 1 (value 10). GetAllEgoData() never yields
+        // self-loops for symmetric layers, so EdgeCount/Mean must include it explicitly.
+        var net = MakeNetwork(3);
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 2, 2.0f);
+        net.AddEdge("trust", 1, 1, 10.0f);
+
+        var result = Analyses.GetLayerStats(net, "trust");
+
+        Assert.True(result.Success);
+        Assert.Equal(2, (int)result.Value!["EdgeCount"]);
+        Assert.Equal(6.0, (double)result.Value!["Mean"], precision: 5);
     }
 
     [Fact]
@@ -1485,6 +1518,36 @@ public class AnalysesTests
         Assert.Equal(v4, v5);
         Assert.Equal(v4, v6);
         Assert.NotEqual(v1, v4);
+    }
+
+    [Fact]
+    public void CommunityDetectionLouvain_SelfLoopOnNode_DoesNotChangePartitionOrCrash()
+    {
+        // Same two disconnected triangles, but node 1 also carries a self-loop. BuildAdjacency's
+        // own doc comment claims self-loops count twice toward degree (standard undirected
+        // convention); regardless of the exact degree math, a self-loop must not move node 1
+        // into a different community or crash detection.
+        var net = MakeNetwork(6);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 4, 5);
+        net.AddEdge("layer", 4, 6);
+        net.AddEdge("layer", 5, 6);
+
+        var result = Analyses.CommunityDetectionLouvain(net, new[] { "layer" });
+
+        Assert.True(result.Success);
+        Assert.Equal(2, (int)result.Value!["NbrCommunities"]);
+
+        var c1 = net.Nodeset.GetNodeAttribute(1, "layer_community");
+        var c2 = net.Nodeset.GetNodeAttribute(2, "layer_community");
+        var c4 = net.Nodeset.GetNodeAttribute(4, "layer_community");
+        Assert.True(c1.Success && c2.Success && c4.Success);
+        Assert.Equal(c1.Value.Value.GetValue(c1.Value.Type), c2.Value.Value.GetValue(c2.Value.Type));
+        Assert.NotEqual(c1.Value.Value.GetValue(c1.Value.Type), c4.Value.Value.GetValue(c4.Value.Type));
     }
 
     [Fact]

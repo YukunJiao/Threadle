@@ -222,8 +222,10 @@ namespace Threadle.Core.Analysis
         /// direction is its own tie with its own value.
         /// </summary>
         /// <param name="layer">The (valued) 1-mode layer to gather edge values from.</param>
+        /// <param name="nodeIds">All node ids in the layer's nodeset (needed to find self-loops in
+        /// symmetric layers, since GetAllEgoData() never yields them).</param>
         /// <returns>A flat list of every edge's value.</returns>
-        internal static List<float> GetLayerEdgeValues(ILayerOneMode layer)
+        internal static List<float> GetLayerEdgeValues(ILayerOneMode layer, uint[] nodeIds)
         {
             List<float> values = [];
             foreach (var (egoId, alters, edgeValues) in layer.GetAllEgoData())
@@ -238,6 +240,14 @@ namespace Threadle.Core.Analysis
                     values.Add(valueSpan[i]);
                 }
             }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly,
+            // once each (a self-loop has no "other side" to double-count).
+            if (!layer.IsDirectional && layer.Selfties)
+                foreach (uint nodeId in nodeIds)
+                    if (layer.CheckEdgeExists(nodeId, nodeId))
+                        values.Add(layer.GetEdgeValue(nodeId, nodeId));
+
             return values;
         }
 

@@ -220,7 +220,7 @@ namespace Threadle.Core.Utilities
                 if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
                     return error!;
                 if (layer is ILayerOneMode layerOneMode)
-                    LayerImportExport.ExportOneModeEdgeList(layerOneMode, filepath, separator, header, idToLabel);
+                    LayerImportExport.ExportOneModeEdgeList(layerOneMode, filepath, separator, header, idToLabel, nodeset);
                 else if (layer is ILayerTwoMode layerTwoMode)
                     LayerImportExport.ExportTwoModeEdgeList(layerTwoMode, filepath, separator, header, idToLabel);
                 else
@@ -252,7 +252,7 @@ namespace Threadle.Core.Utilities
                 if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
                     return error!;
                 if (layer is ILayerOneMode layerOneMode)
-                    LayerImportExport.ExportOneModeMatrix(layerOneMode, filepath, separator, header, idToLabel);
+                    LayerImportExport.ExportOneModeMatrix(layerOneMode, filepath, separator, header, idToLabel, nodeset);
                 else if (layer is ILayerTwoMode layerTwoMode)
                     LayerImportExport.ExportTwoModeMatrix(layerTwoMode, filepath, separator, header, idToLabel);
                 else
