@@ -1477,6 +1477,43 @@ public class AnalysesTests
         }
     }
 
+    // ── DyadCensus ───────────────────────────────────────────────────────────────
+    // A dyad is by definition a pair of two DISTINCT nodes, so a self-tie must never
+    // be counted as Mutual/Asymmetric/Null, nor change Total.
+
+    [Fact]
+    public void DyadCensus_SymmetricLayer_SelftiesExcludedFromMutualCount()
+    {
+        var net = MakeNetwork(3);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.DyadCensus(net, "layer");
+
+        Assert.True(result.Success);
+        Assert.Equal(1L, (long)result.Value!["Mutual"]);
+        Assert.Equal(2L, (long)result.Value!["Null"]);
+        Assert.Equal(3L, (long)result.Value!["Total"]);
+    }
+
+    [Fact]
+    public void DyadCensus_DirectedLayer_SelfLoopExcludedFromArcCounts()
+    {
+        var net = MakeNetwork(3);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Directed, EdgeType.Binary, true);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.DyadCensus(net, "layer");
+
+        Assert.True(result.Success);
+        Assert.Equal(0L, (long)result.Value!["Mutual"]);
+        Assert.Equal(1L, (long)result.Value!["Asymmetric"]);
+        Assert.Equal(2L, (long)result.Value!["Null"]);
+        Assert.Equal(3L, (long)result.Value!["Total"]);
+    }
+
     // ── CommunityDetectionLouvain ────────────────────────────────────────────────────
 
     [Fact]
@@ -2236,6 +2273,52 @@ public class AnalysesTests
         double bwEnd = GetFloatAttr(net, 1, "bw");
         Assert.Equal(0.0, bwEnd, precision: 6);
         Assert.True(bwMiddle > bwEnd);
+    }
+
+    [Fact]
+    public void BetweennessCentrality_PathGraph_MiddleNode_MatchesKnownExactValue()
+    {
+        // 1-2-3-4-5 undirected path. Node 3's normalized betweenness is the textbook
+        // value 4/6 = 0.6667: it sits on the unique shortest path for the 4 unordered
+        // pairs {1,4},{1,5},{2,4},{2,5}, out of (n-1)(n-2)/2 = 6 unordered pairs not
+        // involving node 3 itself. This pins down the normalization constant exactly,
+        // rather than only checking relative ordering against another node.
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 3, 4);
+        net.AddEdge("layer", 4, 5);
+
+        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+
+        Assert.True(result.Success);
+        Assert.Equal(4.0 / 6.0, GetFloatAttr(net, 3, "bw"), precision: 5);
+    }
+
+    [Fact]
+    public void BetweennessCentrality_UndirectedLayer_DirectedFlagDoesNotChangeResult()
+    {
+        // Raw scores are accumulated by summing over every ordered pair regardless of
+        // the 'directed' flag, so for an undirected layer the normalized result must be
+        // identical whether 'directed' is passed as true or false.
+        var netTrue = MakeNetwork(5);
+        AddUndirectedLayer(netTrue, "layer");
+        netTrue.AddEdge("layer", 1, 2);
+        netTrue.AddEdge("layer", 2, 3);
+        netTrue.AddEdge("layer", 3, 4);
+        netTrue.AddEdge("layer", 4, 5);
+        Analyses.BetweennessCentrality(netTrue, new[] { "layer" }, "bw", directed: true);
+
+        var netFalse = MakeNetwork(5);
+        AddUndirectedLayer(netFalse, "layer");
+        netFalse.AddEdge("layer", 1, 2);
+        netFalse.AddEdge("layer", 2, 3);
+        netFalse.AddEdge("layer", 3, 4);
+        netFalse.AddEdge("layer", 4, 5);
+        Analyses.BetweennessCentrality(netFalse, new[] { "layer" }, "bw", directed: false);
+
+        Assert.Equal(GetFloatAttr(netTrue, 3, "bw"), GetFloatAttr(netFalse, 3, "bw"), precision: 6);
     }
 
     [Fact]

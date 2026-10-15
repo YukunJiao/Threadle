@@ -335,15 +335,21 @@ namespace Threadle.Core.Analysis
         /// <summary>
         /// MAN dyad census plus arc and dyadic reciprocity for a single 1-mode layer.
         /// For directed layers iterates all arcs in O(E); for undirected all non-null
-        /// dyads are mutual by definition.
+        /// dyads are mutual by definition. A dyad is by definition a pair of two distinct
+        /// nodes, so a self-tie (on a layer where selfties are allowed) never counts as one.
         /// </summary>
-        internal static Dictionary<string, object> DyadCensus(int n, ILayerOneMode layer)
+        internal static Dictionary<string, object> DyadCensus(uint[] nodeIds, ILayerOneMode layer)
         {
+            int n = nodeIds.Length;
             long totalDyads = (long)n * (n - 1) / 2;
 
             if (layer.IsSymmetric)
             {
                 long M = (long)layer.NbrEdges;
+                if (layer.Selfties)
+                    foreach (uint id in nodeIds)
+                        if (layer.CheckEdgeExists(id, id))
+                            M--;
                 long N = totalDyads - M;
                 return new Dictionary<string, object>
                 {
@@ -362,6 +368,8 @@ namespace Threadle.Core.Analysis
             foreach (var (egoId, alters, _) in layer.GetAllEgoData())
                 foreach (uint v in alters.Span)
                 {
+                    if (v == egoId)
+                        continue;
                     totalArcs++;
                     if (layer.GetEdgeValue(v, egoId) > 0)
                         mutualArcs++;
