@@ -759,26 +759,45 @@ namespace Threadle.Core.Analysis
         /// <summary>
         /// Pearson correlation of j-values and k-values across all edges. Iterates
         /// GetAllEgoData() once; skips edges where either endpoint is missing a value.
-        /// Handles both directed (one arc per pair) and undirected (one entry per edge).
+        /// For directed layers, GetAllEgoData yields one arc per directed tie, which already
+        /// matches Newman's directed formula (one (j,k) observation per arc: source's j-value,
+        /// target's k-value). For undirected layers, GetAllEgoData yields each edge only once
+        /// (from its lower-id endpoint, the usual dedup convention), but Newman's undirected
+        /// formula requires counting every edge from BOTH endpoints - (j,k) and (k,j) - since
+        /// an undirected edge has no inherent direction to break the symmetry. Skipping that
+        /// second observation doesn't just halve the sample, it changes the correlation itself
+        /// (e.g. a pure star graph would come out as r=0 instead of the correct r=-1), so the
+        /// mirrored sample is added explicitly for symmetric layers.
         /// </summary>
         private static double PearsonEdgeCorrelation(ILayerOneMode layer,
             Dictionary<uint, double> jVals, Dictionary<uint, double> kVals)
         {
             double sumJK = 0, sumJ = 0, sumK = 0, sumJ2 = 0, sumK2 = 0;
             long M = 0;
+            bool symmetric = layer.IsSymmetric;
+
+            void AddSample(double j, double k)
+            {
+                sumJK += j * k;
+                sumJ += j;
+                sumK += k;
+                sumJ2 += j * j;
+                sumK2 += k * k;
+                M++;
+            }
 
             foreach (var (egoId, alters, _) in layer.GetAllEgoData())
             {
-                if (!jVals.TryGetValue(egoId, out double j)) continue;
+                bool haveEgoJ = jVals.TryGetValue(egoId, out double egoJ);
+                bool haveEgoK = symmetric && kVals.TryGetValue(egoId, out double egoK);
+                if (!haveEgoJ && !haveEgoK) continue;
+
                 foreach (uint v in alters.Span)
                 {
-                    if (!kVals.TryGetValue(v, out double k)) continue;
-                    sumJK += j * k;
-                    sumJ += j;
-                    sumK += k;
-                    sumJ2 += j * j;
-                    sumK2 += k * k;
-                    M++;
+                    if (haveEgoJ && kVals.TryGetValue(v, out double altK))
+                        AddSample(egoJ, altK);
+                    if (haveEgoK && jVals.TryGetValue(v, out double altJ))
+                        AddSample(altJ, egoK);
                 }
             }
 

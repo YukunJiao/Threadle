@@ -661,6 +661,27 @@ public class LayerTests
     }
 
     [Fact]
+    public void OneModeLayer_SymmetricSelftie_Packed_GetAllEdges_IncludesSelftie()
+    {
+        // LayerOneModeStatic.GetAllEdges/GetNFirstEdges dedupe ordinary undirected edges by
+        // only keeping the side where alterId > egoId. A self-loop has alterId == egoId, which
+        // must still be kept (it has no "other side" to dedupe against) - unlike the raw
+        // NbrEdges/GetEdgeValue/CheckEdgeExists on the same layer, which already got this right.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 1, 2);
+        net.Pack("friends");
+
+        var result = net.GetAllEdges("friends");
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Value!, e => (uint)e["node1"] == 1 && (uint)e["node2"] == 1);
+        Assert.Equal(2, result.Value!.Count); // self-tie (1,1) and (1,2)
+    }
+
+    [Fact]
     public void TwoModeLayer_PackedAndDynamic_GetHyperedgeNodeIds_Identical()
     {
         var ns = MakeNodeset();
@@ -684,6 +705,24 @@ public class LayerTests
             var pakNodes = pak2.GetHyperedgeNodeIds(clubName).Order().ToArray();
             Assert.Equal(dynNodes, pakNodes);
         }
+    }
+
+    [Fact]
+    public void LayerTwoModeStatic_FromHyperedgeRows_DuplicateNodeIdInRow_DoesNotInflateSharedCount()
+    {
+        // FromHyperedgeRows is the raw import path used e.g. by the .bin deserializer, which
+        // trusts node-id arrays as given. A duplicate node id within one row must not be added
+        // to that hyperedge's membership twice, or GetEdgeValue/CheckEdgeExists for that node
+        // would overcount how many hyperedges it shares with a co-member.
+        var rows = new List<(string hyperName, uint[] nodeIds)>
+        {
+            ("club1", new uint[] { 7, 7, 9 }) // node 7 listed twice
+        };
+
+        var layer = LayerTwoModeStatic.FromHyperedgeRows("layer", rows);
+
+        Assert.Equal(1f, layer.GetEdgeValue(7, 9));
+        Assert.True(layer.CheckEdgeExists(7, 9));
     }
 
     [Fact]
