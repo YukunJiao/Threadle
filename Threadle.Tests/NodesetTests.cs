@@ -2,6 +2,7 @@ using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Processing;
 using Threadle.Core.Processing.Enums;
+using Threadle.Core.Utilities;
 
 namespace Threadle.Tests;
 
@@ -135,6 +136,84 @@ public class NodesetTests
     {
         var nodeset = new Nodeset("ns");
         Assert.Empty(nodeset.NodeIdArray);
+    }
+
+    // ── NodeIdArray cache invalidation (UserSettings.NodeCache) ───────────────────
+    // NodeIdArray caches its result (_nodeIdCache) when UserSettings.NodeCache is true
+    // (the default): every mutation that changes nodeset membership must invalidate that
+    // cache, or a prior read leaves NodeIdArray silently stale.
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_ReflectsNodeAddedAfterFirstRead()
+    {
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.AddNode(2);
+
+            Assert.Equal(2, nodeset.NodeIdArray.Length);
+            Assert.Contains(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
+    }
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_ReflectsNodeRemovedAfterFirstRead()
+    {
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            nodeset.AddNode(2);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.RemoveNode(2);
+
+            Assert.Equal(1, nodeset.NodeIdArray.Length);
+            Assert.DoesNotContain(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
+    }
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_UnaffectedByAttributeOnlyChanges()
+    {
+        // Setting/removing a node attribute moves a node between the "with" and "without
+        // attributes" internal buckets without changing nodeset membership, so it must not
+        // require (and must not break) cache correctness either.
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            nodeset.AddNode(2);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.DefineNodeAttribute("age", "int");
+            nodeset.SetNodeAttribute(1, "age", "30");
+
+            Assert.Equal(2, nodeset.NodeIdArray.Length);
+            Assert.Contains(1u, nodeset.NodeIdArray);
+            Assert.Contains(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
     }
 
     // ── GetNodeIdByIndex ─────────────────────────────────────────────────────────
