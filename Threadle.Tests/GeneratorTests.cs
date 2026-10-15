@@ -466,6 +466,23 @@ public class GeneratorTests
     }
 
     [Fact]
+    public void GenerateBarabasiAlbertLayer_MGreaterThanN_PreExistingEdgesSurvive()
+    {
+        // The m-vs-n bounds check must run before the layer is cleared: a failed call must not
+        // destroy whatever edges the layer already had.
+        var network = MakeNetworkWithUndirectedLayer(10);
+        network.AddEdge("layer", 1, 2);
+        network.AddEdge("layer", 3, 4);
+
+        var result = Generators.GenerateBarabasiAlbertLayer(network, "layer", 11);
+
+        Assert.False(result.Success);
+        Assert.Equal("InvalidArgument", result.Code);
+        Assert.True(network.Layers["layer"].CheckEdgeExists(1, 2));
+        Assert.True(network.Layers["layer"].CheckEdgeExists(3, 4));
+    }
+
+    [Fact]
     public void GenerateBarabasiAlbertLayer_TwoModeLayer_Fails()
     {
         var network = MakeNetworkWithTwoModeLayer(20);
