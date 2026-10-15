@@ -435,7 +435,11 @@ namespace Threadle.Core.Utilities
                 if (!uint.TryParse(parts[0], out uint nodeId))
                     continue;
                 nodeset.AddNode(nodeId);
-                for (int i = 1; i < parts.Length && i <= nbrCols; i++)
+                // attributeNames has nbrCols-1 entries (indices 0..nbrCols-2, for header
+                // columns 1..nbrCols-1); a data row with more columns than the header - e.g.
+                // a stray extra tab - must stop at nbrCols-1 rather than nbrCols, or
+                // attributeNames[i-1] indexes past its end.
+                for (int i = 1; i < parts.Length && i < nbrCols; i++)
                 {
                     var val = parts[i];
                     if (string.IsNullOrEmpty(val)) continue;
