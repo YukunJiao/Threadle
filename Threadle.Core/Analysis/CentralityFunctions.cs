@@ -120,12 +120,10 @@ namespace Threadle.Core.Analysis
         /// pair {s,t} is summed twice this way - once as (s,t), once as (t,s) - so the true,
         /// unordered-pair sum is raw/2, which then divides by the unordered-pair count
         /// (n-1)(n-2)/2. Algebraically (raw/2)/((n-1)(n-2)/2) == raw/(n-1)(n-2): the same
-        /// denominator as the directed case. So both cases use (n-1)(n-2); 'directed' doesn't
-        /// change the normalization math and exists only in case a future change to how raw is
-        /// accumulated makes it matter again.
+        /// denominator as the directed case, so both directed and undirected always use (n-1)(n-2).
         /// When sampled (totalSources < n): scale up by n/totalSources.
         /// </summary>
-        internal static Dictionary<uint, double> FinalizeBetweenness(Dictionary<uint, double> raw, uint[] allNodeIds, int totalSources, bool directed)
+        internal static Dictionary<uint, double> FinalizeBetweenness(Dictionary<uint, double> raw, uint[] allNodeIds, int totalSources)
         {
             int n = allNodeIds.Length;
             double norm = (n - 1.0) * (n - 2.0);
@@ -207,7 +205,7 @@ namespace Threadle.Core.Analysis
         /// double-counting in the undirected (symmetric-path) case is correctly accounted for.
         /// When sampled (totalSources &lt; n): scale up by n/totalSources.
         /// </summary>
-        internal static Dictionary<(uint From, uint To), double> FinalizeEdgeBetweenness(Dictionary<(uint From, uint To), double> raw, int n, int totalSources, bool directed)
+        internal static Dictionary<(uint From, uint To), double> FinalizeEdgeBetweenness(Dictionary<(uint From, uint To), double> raw, int n, int totalSources)
         {
             double norm = (n - 1.0) * (n - 2.0);
             double scale = (totalSources > 0 && totalSources < n) ? (double)n / totalSources : 1.0;

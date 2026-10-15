@@ -2266,7 +2266,7 @@ public class AnalysesTests
         net.AddEdge("layer", 3, 4);
         net.AddEdge("layer", 4, 5);
 
-        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
 
         Assert.True(result.Success);
         double bwMiddle = GetFloatAttr(net, 3, "bw");
@@ -2290,35 +2290,10 @@ public class AnalysesTests
         net.AddEdge("layer", 3, 4);
         net.AddEdge("layer", 4, 5);
 
-        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
 
         Assert.True(result.Success);
         Assert.Equal(4.0 / 6.0, GetFloatAttr(net, 3, "bw"), precision: 5);
-    }
-
-    [Fact]
-    public void BetweennessCentrality_UndirectedLayer_DirectedFlagDoesNotChangeResult()
-    {
-        // Raw scores are accumulated by summing over every ordered pair regardless of
-        // the 'directed' flag, so for an undirected layer the normalized result must be
-        // identical whether 'directed' is passed as true or false.
-        var netTrue = MakeNetwork(5);
-        AddUndirectedLayer(netTrue, "layer");
-        netTrue.AddEdge("layer", 1, 2);
-        netTrue.AddEdge("layer", 2, 3);
-        netTrue.AddEdge("layer", 3, 4);
-        netTrue.AddEdge("layer", 4, 5);
-        Analyses.BetweennessCentrality(netTrue, new[] { "layer" }, "bw", directed: true);
-
-        var netFalse = MakeNetwork(5);
-        AddUndirectedLayer(netFalse, "layer");
-        netFalse.AddEdge("layer", 1, 2);
-        netFalse.AddEdge("layer", 2, 3);
-        netFalse.AddEdge("layer", 3, 4);
-        netFalse.AddEdge("layer", 4, 5);
-        Analyses.BetweennessCentrality(netFalse, new[] { "layer" }, "bw", directed: false);
-
-        Assert.Equal(GetFloatAttr(netTrue, 3, "bw"), GetFloatAttr(netFalse, 3, "bw"), precision: 6);
     }
 
     [Fact]
@@ -2375,13 +2350,13 @@ public class AnalysesTests
         {
             var netSeq = MakeRingWithChordsNetwork(20);
             UserSettings.Set("maxthreads", 1);
-            Analyses.BetweennessCentrality(netSeq, new[] { "layer" }, "bw", directed: false);
+            Analyses.BetweennessCentrality(netSeq, new[] { "layer" }, "bw");
             Analyses.ClosenessCentrality(netSeq, new[] { "layer" }, "cl");
             Analyses.HarmonicCentrality(netSeq, new[] { "layer" }, "hm");
 
             var netPar = MakeRingWithChordsNetwork(20);
             UserSettings.Set("maxthreads", Math.Min(4, Environment.ProcessorCount));
-            Analyses.BetweennessCentrality(netPar, new[] { "layer" }, "bw", directed: false);
+            Analyses.BetweennessCentrality(netPar, new[] { "layer" }, "bw");
             Analyses.ClosenessCentrality(netPar, new[] { "layer" }, "cl");
             Analyses.HarmonicCentrality(netPar, new[] { "layer" }, "hm");
 
@@ -2408,7 +2383,7 @@ public class AnalysesTests
         {
             UserSettings.Set("maxthreads", 2);
             var net = MakeRingWithChordsNetwork(15);
-            var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+            var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
             Assert.True(result.Success);
         }
         finally

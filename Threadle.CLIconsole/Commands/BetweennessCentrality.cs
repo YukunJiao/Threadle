@@ -15,7 +15,7 @@ namespace Threadle.CLIconsole.Commands
         /// <summary>
         /// Gets the command syntax definition as shown in help and usage output.
         /// </summary>
-        public string Syntax => "betweennesscentrality(network=[var:network], *layernames=[semicolon-separated], *attrname=[str], *samplesize=[int], *directed=['true'(default),'false'], *traversal=['out'(default),'in','both'])";
+        public string Syntax => "betweennesscentrality(network=[var:network], *layernames=[semicolon-separated], *attrname=[str], *samplesize=[int], *traversal=['out'(default),'in','both'])";
 
         /// <summary>
         /// Gets a human-readable description of what the command does.
@@ -39,7 +39,6 @@ namespace Threadle.CLIconsole.Commands
             string layerNames = command.GetArgumentParseString("layernames", "");
             string? attrName = command.GetArgumentParseString("attrname", "");
             int sampleSize = command.GetArgumentParseInt("samplesize", 0);
-            bool directed = command.GetArgumentParseBool("directed", true);
             string traversalStr = command.GetArgumentParseString("traversal", "out");
             EdgeTraversal traversal = traversalStr.ToLowerInvariant() switch
             {
@@ -49,7 +48,7 @@ namespace Threadle.CLIconsole.Commands
             };
             string[]? layers = layerNames.Length > 0 ? layerNames.Split(';') : null;
             string? attr = attrName.Length > 0 ? attrName : null;
-            return CommandResult.FromOperationResult(Analyses.BetweennessCentrality(network, layers, attr, sampleSize, directed, traversal));
+            return CommandResult.FromOperationResult(Analyses.BetweennessCentrality(network, layers, attr, sampleSize, traversal));
         }
     }
 }
