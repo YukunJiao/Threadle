@@ -135,6 +135,50 @@ public class FileIOTests : IDisposable
             Assert.Contains(id, loaded.NodeIdArray);
     }
 
+    // ── File format detection by filename ──────────────────────────────────────
+    // Misc.GetFileEnding() must find the real extension after the LAST dot (via
+    // Path.GetExtension), not the first - a filename with extra dots before its real
+    // extension must not be misread as an unsupported format.
+
+    [Fact]
+    public void SaveLoadNodeset_Tsv_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.tsv");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
+    [Fact]
+    public void SaveLoadNodeset_TsvGz_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.tsv.gz");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
+    [Fact]
+    public void SaveLoadNodeset_Bin_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.bin");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
     // ── Nodeset attributes round-trip (TSV) ────────────────────────────────────
 
     [Fact]
