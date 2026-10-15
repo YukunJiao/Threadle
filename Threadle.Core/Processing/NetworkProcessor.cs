@@ -664,7 +664,13 @@ namespace Threadle.Core.Processing
         /// neither new pair already exists and (unless the layer allows selfties) neither is a
         /// self-loop. For symmetric layers, each edge's anchor side is re-randomized on every
         /// swap it participates in, since an undirected edge has no real tail/head to anchor a
-        /// value to. Returns the number of successful swaps.
+        /// value to. On a symmetric selfties layer, picking two distinct existing self-loops is
+        /// also rejected outright: both resulting pairs canonicalize to the same (a,c) node pair,
+        /// which would merge the two self-loops into a single ordinary edge - a result with no
+        /// "other side" to keep them apart, so it silently drops the edge list's total edge count
+        /// by one and (for a valued layer) discards one of the two original self-loop weights,
+        /// once BuildRewiredLayer's final _deduplicateEdgesets() pass collapses the resulting
+        /// duplicate-partner entries. Returns the number of successful swaps.
         /// </summary>
         private static int RunTwoEdgeSwaps(List<(uint From, uint To, float Weight)> edges, bool directed, bool selfties, int targetSwaps, int maxTries)
         {
@@ -690,6 +696,15 @@ namespace Threadle.Core.Processing
                     if (Misc.Random.Next(2) == 0) (a, b) = (b, a);
                     if (Misc.Random.Next(2) == 0) (c, d) = (d, c);
                 }
+
+                // Two distinct self-loops (a==b and c==d - necessarily on different nodes, since
+                // each node has at most one self-loop entry here) can't be swapped into a valid
+                // simple-graph outcome: canonicalized, both new pairs below would become the
+                // identical (a,c) key, silently merging two self-loops into one ordinary edge -
+                // dropping the edge count by one and (for a valued layer) discarding one of the
+                // two original weights, once the duplicate-partner entries get deduplicated.
+                if (a == b && c == d)
+                    continue;
 
                 if (!selfties && (a == d || c == b))
                     continue;

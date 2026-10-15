@@ -463,7 +463,10 @@ namespace Threadle.Core.Analysis
         /// each yield a lower bound on the true diameter — often exact in practice, though not
         /// guaranteed, especially for directed layers — and the largest bound seen across trials is
         /// reported as DiameterLowerBound, deliberately not as a confidence interval, since it is an
-        /// extreme-value statistic rather than a mean.
+        /// extreme-value statistic rather than a mean. The sweep trials and the sampled-source pass
+        /// below both draw from Misc.Random, which is thread-static rather than seeded per worker
+        /// thread, so exact reproducibility via randomseed() is only guaranteed when maxthreads is
+        /// set to 1.
         /// </summary>
         internal static Dictionary<string, object> DiameterSampled(uint[] nodeIds, ILayerOneMode layer, EdgeTraversal traversal, int sampleSize, int numSweeps)
         {

@@ -34,7 +34,9 @@ namespace Threadle.Core.Analysis
         /// NbrCommunities, CommunitySizes (descending), the achieved Modularity score Q, and
         /// NumRestarts. When numRestarts &gt; 1, runs that many independent restarts in parallel
         /// across up to 'maxthreads' threads (see 'setting()') and keeps the highest-modularity
-        /// result — a way to escape local optima that a single run can get stuck in.
+        /// result — a way to escape local optima that a single run can get stuck in. Exact
+        /// reproducibility via randomseed() across restarts is only guaranteed when maxthreads is
+        /// set to 1.
         /// </summary>
         public static OperationResult<Dictionary<string, object>> CommunityDetectionLeiden(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0, double randomness = 0.01, int numRestarts = 1)
         {
@@ -60,7 +62,8 @@ namespace Threadle.Core.Analysis
         /// achieved Modularity score Q, and NumRestarts. When numRestarts &gt; 1, runs that many
         /// independent restarts in parallel across up to 'maxthreads' threads (see 'setting()') and
         /// keeps the highest-modularity result — a way to escape local optima that a single run can
-        /// get stuck in.
+        /// get stuck in. Exact reproducibility via randomseed() across restarts is only guaranteed
+        /// when maxthreads is set to 1.
         /// </summary>
         public static OperationResult<Dictionary<string, object>> CommunityDetectionLouvain(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0, int numRestarts = 1)
         {
@@ -87,7 +90,8 @@ namespace Threadle.Core.Analysis
         /// methods, not something this method optimizes for), and NumRestarts. When numRestarts &gt; 1,
         /// runs that many independent restarts in parallel across up to 'maxthreads' threads (see
         /// 'setting()') and keeps the one with the highest modularity — a secondary selection
-        /// criterion here, since LPA itself doesn't target modularity.
+        /// criterion here, since LPA itself doesn't target modularity. Exact reproducibility via
+        /// randomseed() across restarts is only guaranteed when maxthreads is set to 1.
         /// </summary>
         public static OperationResult<Dictionary<string, object>> CommunityDetectionLabelPropagation(Network network, string[]? layerNames, string? attrName = null, int maxIterations = 100, int numRestarts = 1)
         {
@@ -116,7 +120,8 @@ namespace Threadle.Core.Analysis
         /// project 2-mode layers first. Returns a summary with NbrCommunities, CommunitySizes
         /// (descending), the achieved Modularity score Q, and NumRestarts. When numRestarts &gt; 1,
         /// runs that many independent restarts in parallel across up to 'maxthreads' threads (see
-        /// 'setting()') and keeps the highest-modularity result.
+        /// 'setting()') and keeps the highest-modularity result. Exact reproducibility via
+        /// randomseed() across restarts is only guaranteed when maxthreads is set to 1.
         /// </summary>
         public static OperationResult<Dictionary<string, object>> CommunityDetectionLPAm(Network network, string[]? layerNames, string? attrName = null, int numRestarts = 1)
         {
@@ -1586,7 +1591,10 @@ namespace Threadle.Core.Analysis
                 ["NbrCommunities"] = nbrCommunities,
                 ["CommunitySizes"] = communitySizes.OrderByDescending(s => s).ToList(),
                 ["Modularity"] = modularity,
-                ["NumRestarts"] = numRestarts
+                // The underlying detection methods treat numRestarts <= 1 as "run exactly once",
+                // so report that actual run count rather than a caller-supplied 0 or negative
+                // value verbatim.
+                ["NumRestarts"] = Math.Max(numRestarts, 1)
             };
             return OperationResult<Dictionary<string, object>>.Ok(result);
         }
