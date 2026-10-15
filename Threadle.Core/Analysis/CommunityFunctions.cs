@@ -35,7 +35,9 @@ namespace Threadle.Core.Analysis
         /// plus the achieved modularity Q. When numRestarts &gt; 1, runs that many independent restarts
         /// (each with its own random node order and refinement draws, via Misc.Random's thread-local
         /// stream) in parallel across up to 'maxthreads' threads (see 'setting()') and keeps the
-        /// highest-modularity result.
+        /// highest-modularity result. Because Misc.Random is thread-static rather than seeded per
+        /// worker thread, exact reproducibility via randomseed() is only guaranteed when maxthreads
+        /// is set to 1.
         /// </summary>
         internal static (Dictionary<uint, int> communities, double modularity) LeidenCommunities(
             uint[] nodeIds, List<ILayerOneMode> layers, double resolution = 1.0, double randomness = 0.01, int numRestarts = 1)
@@ -162,7 +164,9 @@ namespace Threadle.Core.Analysis
         /// When numRestarts &gt; 1, runs that many independent restarts (each with its own random node
         /// order, via Misc.Random's thread-local stream) in parallel across up to 'maxthreads'
         /// threads (see 'setting()') and keeps the highest-modularity result — local-moving's random
-        /// sweep order means different restarts can land in different local optima.
+        /// sweep order means different restarts can land in different local optima. Because
+        /// Misc.Random is thread-static rather than seeded per worker thread, exact reproducibility
+        /// via randomseed() is only guaranteed when maxthreads is set to 1.
         /// </summary>
         internal static (Dictionary<uint, int> communities, double modularity) LouvainCommunities(
             uint[] nodeIds, List<ILayerOneMode> layers, double resolution = 1.0, int numRestarts = 1)
@@ -267,7 +271,9 @@ namespace Threadle.Core.Analysis
         /// Misc.Random's thread-local stream) in parallel across up to 'maxthreads' threads (see
         /// 'setting()') and keeps the one with the highest modularity — a secondary selection
         /// criterion here, since LPA itself doesn't target modularity, but still a reasonable way to
-        /// pick among otherwise-arbitrary runs.
+        /// pick among otherwise-arbitrary runs. Because Misc.Random is thread-static rather than
+        /// seeded per worker thread, exact reproducibility via randomseed() is only guaranteed when
+        /// maxthreads is set to 1.
         /// </summary>
         internal static (Dictionary<uint, int> communities, double modularity) LabelPropagationCommunities(
             uint[] nodeIds, List<ILayerOneMode> layers, int maxIterations = 100, int numRestarts = 1)
@@ -679,7 +685,9 @@ namespace Threadle.Core.Analysis
                  /// exactly as in <see cref="LouvainCommunities"/>. When numRestarts &gt; 1, runs that many
                  /// independent restarts (each with its own random sweep order, via Misc.Random's
                  /// thread-local stream) in parallel across up to 'maxthreads' threads (see 'setting()')
-                 /// and keeps the highest-modularity result.
+                 /// and keeps the highest-modularity result. Because Misc.Random is thread-static rather
+                 /// than seeded per worker thread, exact reproducibility via randomseed() is only
+                 /// guaranteed when maxthreads is set to 1.
                  /// </summary>
         internal static (Dictionary<uint, int> communities, double modularity) LPAmCommunities(
             uint[] nodeIds, List<ILayerOneMode> layers, int numRestarts = 1)

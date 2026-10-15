@@ -353,6 +353,47 @@ public class NetworkProcessorTests
     }
 
     [Fact]
+    public void RewireLayer_ValuedSymmetric_TwoDistinctSelfties_PreservesEdgeCountAndWeights()
+    {
+        // Regression test: if the swap chain ever picks two DISTINCT existing self-loops to swap
+        // against each other, canonicalizing both resulting pairs collapses them into a single
+        // ordinary edge once _deduplicateEdgesets() runs - silently dropping the layer's total
+        // edge count by one and discarding one of the two original self-loop weights. With many
+        // self-loops present (half the nodes here), this combination is virtually certain to be
+        // picked at least once across a full swap run, so both invariants must hold unconditionally.
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Valued, selfties: true);
+        for (uint nodeId = 2; nodeId <= 20; nodeId += 2)
+            net.AddEdge("layer", nodeId, nodeId, 900f + nodeId);
+        var originalLayer = GetLayer(net, "layer");
+        ulong originalEdgeCount = originalLayer.NbrEdges;
+        var beforeWeights = AllWeights(originalLayer, net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var rewired = GetLayer(net, "rewired");
+        Assert.Equal(originalEdgeCount, rewired.NbrEdges);
+        var afterWeights = AllWeights(rewired, net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+        Assert.Equal(beforeWeights, afterWeights);
+    }
+
+    [Fact]
+    public void RewireLayer_BinarySymmetric_TwoDistinctSelfties_PreservesEdgeCount()
+    {
+        // Same scenario as the valued test above, but binary: there's no weight to lose, but the
+        // merge of two self-loops into one ordinary edge still drops the total edge count by one.
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary, selfties: true);
+        for (uint nodeId = 2; nodeId <= 20; nodeId += 2)
+            net.AddEdge("layer", nodeId, nodeId);
+        ulong originalEdgeCount = GetLayer(net, "layer").NbrEdges;
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(originalEdgeCount, GetLayer(net, "rewired").NbrEdges);
+    }
+
+    [Fact]
     public void RewireLayer_OriginalLayerUnmodified()
     {
         var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);

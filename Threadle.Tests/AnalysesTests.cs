@@ -1698,6 +1698,23 @@ public class AnalysesTests
     }
 
     [Fact]
+    public void CommunityDetectionLouvain_NumRestartsZero_ReportsOneSinceOneRunStillExecutes()
+    {
+        // LouvainCommunities treats numRestarts <= 1 as "run exactly once", so a caller-supplied
+        // 0 (or a negative value) must not be echoed back verbatim - that would misreport how
+        // many runs actually happened.
+        var net = MakeNetwork(3);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+
+        var result = Analyses.CommunityDetectionLouvain(net, new[] { "layer" }, numRestarts: 0);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, (int)result.Value!["NumRestarts"]);
+    }
+
+    [Fact]
     public void CommunityDetectionLouvain_NumRestartsGreaterThanOne_StillFindsCorrectCommunities()
     {
         var net = MakeNetwork(6);
