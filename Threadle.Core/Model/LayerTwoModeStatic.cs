@@ -125,7 +125,15 @@ namespace Threadle.Core.Model
             for (int i = 0; i < rows.Count; i++)
             {
                 offsetHyperedges[i] = hyperedgeNodeIdsList.Count;
-                uint[] sortedNodeIds = [.. rows[i].nodeIds.Order()];
+                // A duplicate node id within a single row (untrusted input - this is the raw
+                // import path, e.g. from a .bin file) would otherwise be added to this
+                // hyperedge's member list twice, making GetEdgeValue/CheckEdgeExists for that
+                // node overcount its shared hyperedges, and making PickRandomAlterO1 able to
+                // loop forever if a degenerate hyperedge ends up containing only repeats of one
+                // node id.
+                List<uint> sortedNodeIdsList = [.. rows[i].nodeIds];
+                Misc.DeduplicateUintList(sortedNodeIdsList);
+                uint[] sortedNodeIds = sortedNodeIdsList.ToArray();
                 hyperedgeNodeIdsList.AddRange(sortedNodeIds);
                 foreach (uint nodeId in sortedNodeIds)
                 {

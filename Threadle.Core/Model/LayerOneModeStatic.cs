@@ -451,7 +451,12 @@ namespace Threadle.Core.Model
                 }
                 for (int j = start; j < end; j++)
                 {
-                    if (IsSymmetric && _neighborNodeIds[j] <= egoId)
+                    // A self-loop (neighbor == egoId) is stored once, under its one node, with
+                    // no "other side" to dedupe against - unlike an ordinary undirected edge,
+                    // which appears once per endpoint and is kept only from the lower-id side.
+                    // Using <= here (instead of <) would always filter it out, even though
+                    // NbrEdges/GetEdgeValue/CheckEdgeExists all treat it as present.
+                    if (IsSymmetric && _neighborNodeIds[j] < egoId)
                         continue;
                     if (edges.Count >= limit)
                         return edges;
@@ -562,7 +567,9 @@ namespace Threadle.Core.Model
                 for (int j = start; j < end && edges.Count < n; j++)
                 {
                     uint alterId = _neighborNodeIds[j];
-                    if (IsSymmetric && alterId <= egoId)
+                    // See GetAllEdges: a self-loop (alterId == egoId) is stored once and must
+                    // not be filtered out by the same <= used to dedupe ordinary undirected edges.
+                    if (IsSymmetric && alterId < egoId)
                         continue;
                     edges.Add(IsBinary ? $"{egoId} {arrow} {alterId}" : $"{egoId} {arrow} {alterId} ({_values![j]})");
                 }

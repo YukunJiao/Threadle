@@ -3066,6 +3066,54 @@ public class AnalysesTests
         }
     }
 
+    // ── Assortativity ────────────────────────────────────────────────────────────
+    // PearsonEdgeCorrelation (shared by DegreeAssortativity and ContinuousAssortativity)
+    // must symmetrize undirected edges - counting each edge from both endpoints - to match
+    // Newman's formula; GetAllEgoData only yields each undirected edge once (lower-id side).
+
+    [Fact]
+    public void DegreeAssortativity_StarGraph_MatchesKnownExactValue()
+    {
+        // Hub (node 1, degree 4) connected to four degree-1 leaves: a pure star graph has the
+        // textbook assortativity r = -1.0 (perfect negative degree correlation).
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 1, 4);
+        net.AddEdge("layer", 1, 5);
+
+        var result = Analyses.DegreeAssortativity(net, "layer");
+
+        Assert.True(result.Success);
+        Assert.Equal(-1.0, result.Value, precision: 6);
+    }
+
+    [Fact]
+    public void Assortativity_ContinuousAttributeEqualToDegree_StarGraph_MatchesDegreeAssortativity()
+    {
+        // A Float attribute set to each node's own degree must reproduce the same -1.0 result
+        // as DegreeAssortativity on the same star graph, since both reduce to the identical
+        // Pearson correlation of (degree, degree) across edges.
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 1, 3);
+        net.AddEdge("layer", 1, 4);
+        net.AddEdge("layer", 1, 5);
+        net.Nodeset.DefineNodeAttribute("deg", "float");
+        net.Nodeset.SetNodeAttribute(1, "deg", "4");
+        net.Nodeset.SetNodeAttribute(2, "deg", "1");
+        net.Nodeset.SetNodeAttribute(3, "deg", "1");
+        net.Nodeset.SetNodeAttribute(4, "deg", "1");
+        net.Nodeset.SetNodeAttribute(5, "deg", "1");
+
+        var result = Analyses.Assortativity(net, "layer", "deg");
+
+        Assert.True(result.Success);
+        Assert.Equal(-1.0, result.Value, precision: 5);
+    }
+
     // ── Constraint / EffectiveSize (Burt's structural holes) ───────────────────────
     // StructuralHoles' per-node O(k²) computation is independent across nodes once the
     // symmetrized weight/strength tables are built; tests below cover both the math and
