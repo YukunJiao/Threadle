@@ -273,6 +273,24 @@ public class ImportTests : IDisposable
     }
 
     [Fact]
+    public void ImportTwoModeEdgelist_AffiliationNameWithLeadingApostrophe_NotStripped()
+    {
+        // Misc.TrimQuotes() must remove only a matching PAIR of wrapping quote characters, not
+        // every leading/trailing character that happens to be in the quote-char set - otherwise a
+        // legitimately apostrophe-led name like "'80s Club" loses its leading apostrophe.
+        var net = EmptyNetwork();
+        net.AddLayerTwoMode("clubs");
+        string path = WriteTempFile("1\t'80s Club");
+
+        var result = FileManager.ImportTwoModeEdgeList(path, net, (LayerTwoMode)net.Layers["clubs"], 0, 1, false, '\t', true);
+
+        Assert.True(result.Success, result.Message);
+        var club = net.GetHyperedgeNodes("clubs", "'80s Club");
+        Assert.True(club.Success, club.Message);
+        Assert.Contains(1u, club.Value!);
+    }
+
+    [Fact]
     public void ImportTwoModeMatrix_Labels()
     {
         var net = EmptyNetwork();
