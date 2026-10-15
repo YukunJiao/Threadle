@@ -456,6 +456,71 @@ namespace Threadle.Core.Model
         }
 
         /// <summary>
+        /// Converts a node attribute to a new type, under a new name: the original attribute is
+        /// never touched or removed. Each node's value is converted independently by formatting it
+        /// as a string (the same formatting used when exporting or displaying it) and re-parsing
+        /// that string as the new type, using the exact same parser <see cref="SetNodeAttribute(uint, string, string)"/>
+        /// already uses for CLI string arguments. A value that doesn't parse as the new type - e.g.
+        /// a non-numeric string converted to Int, or a multi-character string converted to Char -
+        /// is simply left unset on the new attribute for that node, same as a node that had no value
+        /// for the source attribute at all; nothing else aborts because of it. Converting a String to
+        /// Float or Int keeps that parser's native handling of "NaN"/"Infinity" as real values, not
+        /// as missing data.
+        /// </summary>
+        /// <param name="from">The current name of the node attribute to convert.</param>
+        /// <param name="to">The name for the new, converted node attribute.</param>
+        /// <param name="newTypeStr">The type to convert to ('int', 'char', 'float', 'bool', or 'string').</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went, including how many
+        /// node values converted versus were left unset.</returns>
+        public OperationResult ConvertNodeAttributeType(string from, string to, string newTypeStr)
+        {
+            if (!(Misc.GetAttributeType(newTypeStr) is NodeAttributeType newType))
+                return OperationResult.Fail("InvalidAttributeType", $"Attribute type '{newTypeStr}' not recognized.");
+
+            var definition = NodeAttributeDefinitionManager.GetNodeAttributeDefinition(from);
+            if (definition is null)
+                return OperationResult.Fail("AttributeUnknown", $"Node attribute '{from}' not found.");
+            byte fromIndex = definition.Value.Index;
+            NodeAttributeType fromType = definition.Value.AttrType;
+            to = to.Trim();
+            if (to.Length < 1)
+                return OperationResult.Fail("MissingAttributeName", "New name of attribute must be at least one character.");
+            if (NodeAttributeDefinitionManager.CheckIfAttributeNameExists(to))
+                return OperationResult.Fail("AttributeAlreadyExists", $"Node attribute named '{to}' already defined.");
+
+            OperationResult<byte> defineResult = DefineNodeAttribute(to, newType);
+            if (!defineResult.Success)
+                return defineResult;
+            byte toIndex = defineResult.Value;
+
+            int converted = 0, skipped = 0;
+            foreach (var kvp in _nodesWithAttributes)
+            {
+                int idx = kvp.Value.AttrIndexes.IndexOf(fromIndex);
+                if (idx < 0)
+                    continue;
+                NodeAttributeValue oldValue = kvp.Value.AttrValues[idx];
+                string str = fromType == NodeAttributeType.String
+                    ? GetStringFromPool((int)oldValue.GetValue(fromType)!)
+                    : oldValue.ToString(fromType);
+
+                NodeAttributeValue? newValue = newType == NodeAttributeType.String
+                    ? new NodeAttributeValue(GetOrAddStringToPool(str))
+                    : Misc.CreateNodeAttributeValueFromTypeAndString(newType, str);
+
+                if (newValue is NodeAttributeValue nav)
+                {
+                    SetNodeAttribute(kvp.Key, toIndex, nav);
+                    converted++;
+                }
+                else
+                    skipped++;
+            }
+            _modified();
+            return OperationResult.Ok($"Node attribute '{from}' ({fromType}) converted to '{to}' ({newType}): {converted} converted, {skipped} skipped.");
+        }
+
+        /// <summary>
         /// Returns the names of all currently defined node attributes, in definition (index) order.
         /// </summary>
         /// <returns>A list of node attribute names.</returns>

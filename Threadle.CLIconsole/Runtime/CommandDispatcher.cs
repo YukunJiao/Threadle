@@ -38,7 +38,8 @@ namespace Threadle.CLIconsole.Runtime
             ["clusteringcoefficient"] = new ClusteringCoefficient(),
             ["communitydetection"] = new CommunityDetection(),
             ["components"] = new Components(),
-            ["constraints"] = new Commands.Constraint(),
+            ["constraints"] = new Commands.Constraint(), // Not to collide with System.Data.Constraint!
+            ["convertattr"] = new ConvertAttr(),
             ["coreness"] = new Coreness(),
             ["createnetwork"] = new CreateNetwork(),
             ["createnodeset"] = new CreateNodeset(),

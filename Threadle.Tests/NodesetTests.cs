@@ -478,6 +478,170 @@ public class NodesetTests
         Assert.True(result.Success);
     }
 
+    // ── ConvertNodeAttributeType ──────────────────────────────────────────────
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToInt_ValidValueConverts()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        var r = nodeset.GetNodeAttribute(1, "age_int");
+        Assert.True(r.Success);
+        Assert.Equal(30, (int)r.Value.Value.GetValue(r.Value.Type)!);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToInt_UnparseableValueIsSkippedNotFailed()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.SetNodeAttribute(2, "age", "NA");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(nodeset.GetNodeAttribute(1, "age_int").Success);
+        Assert.False(nodeset.GetNodeAttribute(2, "age_int").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToFloat_NaNConvertsAsRealValue()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("score", "string");
+        nodeset.SetNodeAttribute(1, "score", "NaN");
+
+        var result = nodeset.ConvertNodeAttributeType("score", "score_float", "float");
+
+        Assert.True(result.Success, result.Message);
+        var r = nodeset.GetNodeAttribute(1, "score_float");
+        Assert.True(r.Success);
+        Assert.True(float.IsNaN((float)r.Value.Value.GetValue(r.Value.Type)!));
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToBool_MismatchedStringIsSkipped()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("active", "string");
+        nodeset.SetNodeAttribute(1, "active", "true");
+        nodeset.SetNodeAttribute(2, "active", "yes"); // not "true"/"false"
+
+        var result = nodeset.ConvertNodeAttributeType("active", "active_bool", "bool");
+
+        Assert.True(result.Success, result.Message);
+        var r1 = nodeset.GetNodeAttribute(1, "active_bool");
+        Assert.True(r1.Success);
+        Assert.True((bool)r1.Value.Value.GetValue(r1.Value.Type)!);
+        Assert.False(nodeset.GetNodeAttribute(2, "active_bool").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToChar_MultiCharStringIsSkipped()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("grade", "string");
+        nodeset.SetNodeAttribute(1, "grade", "A");
+        nodeset.SetNodeAttribute(2, "grade", "AB");
+
+        var result = nodeset.ConvertNodeAttributeType("grade", "grade_char", "char");
+
+        Assert.True(result.Success, result.Message);
+        var r1 = nodeset.GetNodeAttribute(1, "grade_char");
+        Assert.True(r1.Success);
+        Assert.Equal('A', (char)r1.Value.Value.GetValue(r1.Value.Type)!);
+        Assert.False(nodeset.GetNodeAttribute(2, "grade_char").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_IntToString_AlwaysSucceeds()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_str", "string");
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("30", nodeset.GetNodeAttributeString(1, "age_str").Value);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_NodeWithNoSourceValue_GetsNoTargetValueEither()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        // node 2 has no value for "age" at all
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        Assert.False(nodeset.GetNodeAttribute(2, "age_int").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_OriginalAttributeUnaffected()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.Equal("30", nodeset.GetNodeAttributeString(1, "age").Value);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_NonExistentSourceAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        var result = nodeset.ConvertNodeAttributeType("ghost", "whatever", "int");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_TargetNameAlreadyExists_FailsAndCreatesNothing()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.DefineNodeAttribute("age_int", "int");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_UnrecognizedTargetType_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "string");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "notatype");
+
+        Assert.False(result.Success);
+        Assert.False(nodeset.GetDefinedAttributeNames().Contains("age_int"));
+    }
+
     // ── Merge ───────────────────────────────────────────────────────────────
 
     [Fact]
