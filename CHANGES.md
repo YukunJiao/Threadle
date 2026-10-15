@@ -1,0 +1,109 @@
+# Changes
+
+## 1.3
+
+### New features
+
+- **Centrality measures**: betweenness, closeness, harmonic, eigenvector, and edge
+  betweenness centrality, all multithreaded.
+- **Clustering coefficient**: multiple methods (Watts-Strogatz, Fagiolo, Barrat,
+  Onnela) plus overall transitivity, auto-selected by layer type unless overridden.
+- **Coreness** (k-core decomposition, Batagelj & Zaversnik 2003).
+- **Assortativity**: degree assortativity and attribute-based assortativity.
+- **Burt's structural holes**: `constraint()` and `effectivesize()`.
+- **Dyad census** (`dyadcensus()`) and **triadic census** (`triadiccensus()`), the
+  latter with an optional sampled mode returning confidence intervals (Wilson score).
+- **Community detection**: Louvain, Label Propagation, Leiden, and Girvan-Newman, all
+  under one `communitydetection()` command (`type=` argument), multithreaded with
+  optional multi-restart search.
+- **Diameter** (`diameter()`): exact or sampled (two-sweep) estimation, with average
+  shortest path length.
+- **Eccentricity** and **small-world coefficient**.
+- **Network/layer rewiring** (`rewire()`): degree-preserving 2-edge swap, or the
+  3-edge (networkx-style) swap for directed layers.
+- **Shortest paths**: `shortestpaths()` now computes a batch of specific node pairs
+  (optionally returning the actual path); `shortestpathsattributes()` (previously
+  `shortestpaths()`) computes shortest-path distance distributions between node
+  attribute values, multithreaded.
+- **Random walker first-passage time** (`rwfpt()`), multithreaded, with optional
+  per-layer weighting (`layerweights`) and histogram output.
+- **File formats**: GraphML and Pajek (.net) import/export, alongside the existing
+  formats; `export()`/`importlayer()` support string node labels in place of raw ids,
+  and importing an edgelist can filter rows by column value.
+- **Layer operations**: `mergelayers()` (1-mode and 2-mode), `binarytovalued()`,
+  `symmetrictodirected()`, `duplicate()` and `rename()` (for layers and node
+  attributes).
+- **Network/nodeset operations**: `mergenetworks()` and `mergenodesets()`, with
+  configurable conflict handling for attributes defined in both sources.
+- **Node attribute tools**: `setattrs()` (set a value across many nodes at once) and
+  `getattrstable()` (tabular export of attribute values).
+- **`getalterdetails()`**: detailed, row-per-relationship table of multiple nodes'
+  alters across layers — suited to feeding SEIR/SIR-style epidemic models.
+- **`getlayerstats()`**: summary statistics for a valued 1-mode layer's edge values.
+- **Multithreading**: configurable via `setting(maxthreads=...)`, with system core
+  info via `systeminfo()`, and persistent defaults via an optional `appconfig.json`.
+  Applied throughout: all centralities, clustering coefficient, constraint/
+  effectivesize, triadic census, community detection, and shortestpathsattributes.
+
+### Behavior changes
+
+> These change the numeric result of an existing command — not new bugs. The old
+> result was computed incorrectly in each case.
+
+- **Betweenness and edge betweenness centrality on undirected layers** were
+  previously normalized incorrectly (effectively double-counted), producing values
+  up to 2x too large. Both now normalize correctly; as a consequence, the `directed`
+  parameter on `betweennesscentrality()` no longer affects the result and has been
+  removed.
+- **Degree and attribute-based assortativity on undirected layers** previously only
+  sampled each edge from one endpoint, which doesn't just halve the sample but changes
+  the correlation itself — a pure star graph, for example, came out as 0 instead of
+  the correct -1. Now correctly samples each undirected edge from both endpoints.
+- **Self-loops on symmetric (undirected) layers allowing self-ties** were silently
+  dropped or miscounted by several functions that enumerate or query an edge list —
+  including `getalledges()`, the `preview()` edge list, `removeedge()`'s success
+  reporting, and the random-network generators. All now correctly account for
+  self-loops, which are stored once (not twice) per the layer's internal
+  representation.
+- **`constraint()`/`effectivesize()`** (Burt's structural holes) now refuse to run on
+  any layer that allows self-ties, since the underlying formula has no defined
+  treatment for a self-tie — even if the layer happens to have none.
+- **`clusteringcoefficient()` with the Onnela method** likewise now refuses layers
+  that allow self-ties, for the same reason (use `barrat` for such layers instead).
+- **`rwed` (random walker exposure distance)** was removed; only `rwfpt` (first-
+  passage time) remains.
+
+### Fixes
+
+- Fixed hyperedge membership corruption in 2-mode layers when an import source (or a
+  raw `.bin` file) contained a duplicate node id within one hyperedge's row — this
+  could overcount shared affiliations between two nodes and, in one code path, cause
+  an infinite loop when picking a random alter.
+- Fixed `symmetrize()` with the `sum` method producing a binary layer instead of the
+  intended valued one.
+- Fixed a default-settings bug in eigenvector centrality.
+- Fixed `GenerateErdosRenyiLayer`/`GenerateBarabasiAlbertLayer`/
+  `GenerateWattsStrogatzLayer`: self-ties could be double-added on symmetric layers,
+  `GenerateWattsStrogatzLayer` had no validation that `k` fit the network size, and
+  `GenerateBarabasiAlbertLayer` cleared a layer's existing edges *before* validating
+  its `m` parameter, destroying data even when the call failed.
+- Fixed `rewire()`: picking two existing self-loops as the pair to swap could merge
+  them into a single ordinary edge, silently dropping the layer's edge count by one
+  and (for a valued layer) discarding one of the two original weights.
+- Fixed loading a `.tsv` nodeset or network file crashing with an out-of-range error
+  when a data row had more columns than the header defined.
+- Fixed file save/load failing with "unsupported format" for any filename containing
+  more than one dot before its real extension (e.g. `my.network.tsv`).
+- Fixed import/filter value parsing stripping a leading or trailing quote character
+  even when it wasn't paired with a matching closing quote — corrupting a value that
+  legitimately started or ended with an apostrophe or curly quote (e.g. `'80s Club`).
+
+### Known limitations
+
+- GraphML has no native character attribute type, so round-tripping a `Char` node
+  attribute through `export(...,format=graphml)`/`importnetwork()` converts it to a
+  `String` (the value survives; the type does not). This is a limitation of the
+  GraphML format, not a bug — redefine the attribute as `Char` after import if needed.
+- Exact reproducibility via `randomseed()` for community-detection multi-restart
+  search and diameter's sampled mode is only guaranteed when `maxthreads` is set to 1,
+  since the underlying random number generator is not seeded per worker thread.
