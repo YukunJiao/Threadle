@@ -658,7 +658,15 @@ namespace Threadle.Core.Utilities
 
         #region Methods (private): helpers
         /// <summary>
-        /// Maps a GraphML attribute type to a Threadle node attribute type.
+        /// Maps a GraphML attribute type to a Threadle node attribute type. GraphML's own type
+        /// enumeration (boolean/int/long/float/double/string) has no char equivalent, so a
+        /// Char attribute is written via <see cref="GraphmlType"/> as "string" and - since
+        /// nothing in the written file marks it as having been a Char - always comes back as
+        /// NodeAttributeType.String here: round-tripping a Char attribute through GraphML loses
+        /// that type (the single-character value itself survives as a one-character string).
+        /// This is an accepted limitation of the format, not a bug to engineer around: inventing
+        /// a non-standard attr.type="char" would make the file fail schema validation in other
+        /// GraphML tools (yEd, Gephi, igraph, ...), which is worse than the type loss itself.
         /// </summary>
         private static NodeAttributeType ThreadleType(string graphmlType) => graphmlType switch
         {
