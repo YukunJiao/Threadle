@@ -40,6 +40,11 @@
 - **`getalterdetails()`**: detailed, row-per-relationship table of multiple nodes'
   alters across layers — suited to feeding SEIR/SIR-style epidemic models.
 - **`getlayerstats()`**: summary statistics for a valued 1-mode layer's edge values.
+- **`convertattr()`**: converts a node attribute to a new type, storing the result
+  under a new name and leaving the original untouched. Each node's value is converted
+  independently; a value that doesn't convert (e.g. a non-numeric string to `int`) is
+  simply left unset on the new attribute for that node, rather than failing the whole
+  command.
 - **Multithreading**: configurable via `setting(maxthreads=...)`, with system core
   info via `systeminfo()`, and persistent defaults via an optional `appconfig.json`.
   Applied throughout: all centralities, clustering coefficient, constraint/
@@ -103,7 +108,8 @@
 - GraphML has no native character attribute type, so round-tripping a `Char` node
   attribute through `export(...,format=graphml)`/`importnetwork()` converts it to a
   `String` (the value survives; the type does not). This is a limitation of the
-  GraphML format, not a bug — redefine the attribute as `Char` after import if needed.
+  GraphML format, not a bug — use `convertattr(...,attrtype=char)` to restore it to a
+  `Char` attribute (under a new name) after import.
 - Exact reproducibility via `randomseed()` for community-detection multi-restart
   search and diameter's sampled mode is only guaranteed when `maxthreads` is set to 1,
   since the underlying random number generator is not seeded per worker thread.
