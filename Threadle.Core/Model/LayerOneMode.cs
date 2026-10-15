@@ -297,9 +297,29 @@ namespace Threadle.Core.Model
         {
             List<Dictionary<string, object>> edges = [];
             int skipped = 0;
+            bool includeSelfties = IsSymmetric && Selfties;
             foreach (var kvp in _edgesets)
             {
                 uint egoId = kvp.Key;
+
+                // GetOutboundEdgesWithValues() never yields self-loops for symmetric layers
+                // (a self-loop has no "other side" alterId > egoId to be found via): add it
+                // explicitly, once, from the one edgeset it is stored in.
+                if (includeSelfties && CheckEdgeExists(egoId, egoId))
+                {
+                    if (skipped < offset)
+                        skipped++;
+                    else if (edges.Count < limit)
+                        edges.Add(new Dictionary<string, object>
+                        {
+                            ["node1"] = egoId,
+                            ["node2"] = egoId,
+                            ["value"] = GetEdgeValue(egoId, egoId)
+                        });
+                    else
+                        return edges;
+                }
+
                 foreach (var (alterId, value) in kvp.Value.GetOutboundEdgesWithValues(egoId))
                 {
                     if (skipped < offset)
@@ -380,6 +400,7 @@ namespace Threadle.Core.Model
         public List<string> GetNFirstEdges(int n = 10)
         {
             List<string> edges = new(n);
+            bool includeSelfties = IsSymmetric && Selfties;
             foreach (var kvp in _edgesets)
             {
                 uint egoNodeId = kvp.Key;
@@ -387,6 +408,20 @@ namespace Threadle.Core.Model
                 int remaining = n - edges.Count;
                 if (remaining <= 0)
                     break;
+
+                // FormatEdges() only finds the other side (partnerId > egoNodeId) of an
+                // ordinary undirected edge; a self-loop has no other side, so it is never
+                // reported by FormatEdges() and must be added explicitly here.
+                if (includeSelfties && CheckEdgeExists(egoNodeId, egoNodeId))
+                {
+                    edges.Add(IsBinary
+                        ? $"{egoNodeId} <-> {egoNodeId}"
+                        : $"{egoNodeId} <-> {egoNodeId} ({GetEdgeValue(egoNodeId, egoNodeId)})");
+                    remaining--;
+                    if (remaining <= 0)
+                        break;
+                }
+
                 List<string> edgeLines = edgeset.FormatEdges(egoNodeId, remaining);
                 edges.AddRange(edgeLines);
             }

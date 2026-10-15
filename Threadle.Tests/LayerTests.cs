@@ -682,6 +682,41 @@ public class LayerTests
     }
 
     [Fact]
+    public void OneModeLayer_SymmetricSelftie_Dynamic_GetAllEdges_IncludesSelftie()
+    {
+        // Same bug as the packed/static case above, but in the dynamic layer: GetAllEdges()
+        // there builds its output purely from GetOutboundEdgesWithValues(), which by design
+        // never yields self-loops (they have no "other side" partnerId > egoId) - so without
+        // explicit compensation, the self-tie silently never appears.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 1, 2);
+
+        var result = net.GetAllEdges("friends");
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Value!, e => (uint)e["node1"] == 1 && (uint)e["node2"] == 1);
+        Assert.Equal(2, result.Value!.Count); // self-tie (1,1) and (1,2)
+    }
+
+    [Fact]
+    public void OneModeLayer_SymmetricSelftie_Dynamic_GetNFirstEdges_IncludesSelftie()
+    {
+        // Same underlying gap as GetAllEdges, but for the preview()-backing method: FormatEdges()
+        // on the edgeset also never reports a self-loop, so GetNFirstEdges() must compensate too.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+
+        List<string> preview = net.Layers["friends"].GetNFirstEdges(10);
+
+        Assert.Contains(preview, line => line.Contains("1 <-> 1"));
+    }
+
+    [Fact]
     public void TwoModeLayer_PackedAndDynamic_GetHyperedgeNodeIds_Identical()
     {
         var ns = MakeNodeset();
