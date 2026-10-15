@@ -246,6 +246,32 @@ public class FileIOTests : IDisposable
         Assert.True((bool)navActive.GetValue(tActive));
     }
 
+    [Fact]
+    public void LoadNodeset_Tsv_RowWithMoreColumnsThanHeader_HandledGracefully()
+    {
+        // ReadNodesetFromFile's header defines nbrCols columns (id + nbrCols-1 attributes), so
+        // attributeNames has nbrCols-1 entries. A data row with MORE tab-separated fields than
+        // the header - e.g. a stray extra tab - must not crash by indexing past attributeNames;
+        // the extra column is simply ignored and the rest of the row loads normally.
+        string path = TempFile(".tsv");
+        File.WriteAllLines(path, new[]
+        {
+            "test-ns\tage:Int",
+            "1\t30\textra",
+            "2\t40"
+        });
+
+        var loadResult = FileManager.Load(path, "nodeset");
+
+        Assert.True(loadResult.Success);
+        var loaded = (Nodeset)loadResult.Value!.MainStructure;
+        Assert.Equal(2, loaded.NodeIdArray.Length);
+        var (nav1, type1) = loaded.GetNodeAttribute(1, "age").Value;
+        Assert.Equal(30, (int)nav1.GetValue(type1));
+        var (nav2, type2) = loaded.GetNodeAttribute(2, "age").Value;
+        Assert.Equal(40, (int)nav2.GetValue(type2));
+    }
+
     // ── Attributes round-trip (BIN) ────────────────────────────────────────────
 
     [Fact]

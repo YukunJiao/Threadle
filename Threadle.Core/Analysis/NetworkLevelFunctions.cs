@@ -174,25 +174,6 @@ namespace Threadle.Core.Analysis
             long total = n >= 3 ? (long)n * (n - 1) * (n - 2) / 6 : 0;
             var counts = new Dictionary<string, long>(TriadTypeOrder.Length);
             foreach (string type in TriadTypeOrder) counts[type] = 0;
-            //var counts = new Dictionary<string, long>
-            //{
-            //    ["003"] = 0,
-            //    ["012"] = 0,
-            //    ["102"] = 0,
-            //    ["021D"] = 0,
-            //    ["021U"] = 0,
-            //    ["021C"] = 0,
-            //    ["111D"] = 0,
-            //    ["111U"] = 0,
-            //    ["201"] = 0,
-            //    ["030T"] = 0,
-            //    ["030C"] = 0,
-            //    ["120D"] = 0,
-            //    ["120U"] = 0,
-            //    ["120C"] = 0,
-            //    ["210"] = 0,
-            //    ["300"] = 0
-            //};
             if (total > 0)
             {
                 for (int s = 0; s < sampleSize; s++)
@@ -204,12 +185,6 @@ namespace Threadle.Core.Analysis
                     counts[ClassifyTriad(layer, a, b, c)]++;
                 }
             }
-            //const double z95 = 1.959963984540054;
-            //var estimates = new Dictionary<string, long>(counts.Count);
-            //var standardErrors = new Dictionary<string, object>(counts.Count);
-            //var ciLower = new Dictionary<string, object>(counts.Count);
-            //var ciUpper = new Dictionary<string, object>(counts.Count);
-            //foreach (var (type, sampled) in counts)
             const double z = 1.959963984540054;
             double zsq = z * z;
             int m = Math.Max(sampleSize, 1);
@@ -221,13 +196,6 @@ namespace Threadle.Core.Analysis
             var ciUpper = new Dictionary<string, object>(TriadTypeOrder.Length);
             foreach (string type in TriadTypeOrder)
             {
-                //double p = sampleSize > 0 ? (double)sampled / sampleSize : 0.0;
-                //double estCount = p * total;
-                //double seCount = Math.Sqrt(p * (1 - p) / Math.Max(sampleSize, 1)) * total;
-                //estimates[type] = (long)Math.Round(estCount);
-                //standardErrors[type] = seCount;
-                //ciLower[type] = Math.Max(0.0, estCount - z95 * seCount);
-                //ciUpper[type] = Math.Min((double)total, estCount + z95 * seCount);
                 double p = (double)counts[type] / m;
                 result[type] = p * total;
 
@@ -241,7 +209,6 @@ namespace Threadle.Core.Analysis
                 ciLower[type] = pLow * total;
                 ciUpper[type] = pHigh * total;
             }
-            //var result = BuildResult(estimates, estimates["003"], total);
             result["Total"] = total;
             result["Method"] = "Sampled";
             result["SampleSize"] = sampleSize;
