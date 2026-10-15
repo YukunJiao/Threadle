@@ -789,7 +789,8 @@ namespace Threadle.Core.Analysis
             foreach (var (egoId, alters, _) in layer.GetAllEgoData())
             {
                 bool haveEgoJ = jVals.TryGetValue(egoId, out double egoJ);
-                bool haveEgoK = symmetric && kVals.TryGetValue(egoId, out double egoK);
+                bool haveEgoKVal = kVals.TryGetValue(egoId, out double egoK);
+                bool haveEgoK = symmetric && haveEgoKVal;
                 if (!haveEgoJ && !haveEgoK) continue;
 
                 foreach (uint v in alters.Span)
