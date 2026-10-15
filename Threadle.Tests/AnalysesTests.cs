@@ -1477,6 +1477,43 @@ public class AnalysesTests
         }
     }
 
+    // ── DyadCensus ───────────────────────────────────────────────────────────────
+    // A dyad is by definition a pair of two DISTINCT nodes, so a self-tie must never
+    // be counted as Mutual/Asymmetric/Null, nor change Total.
+
+    [Fact]
+    public void DyadCensus_SymmetricLayer_SelftiesExcludedFromMutualCount()
+    {
+        var net = MakeNetwork(3);
+        AddUndirectedLayer(net, "layer", selfties: true);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.DyadCensus(net, "layer");
+
+        Assert.True(result.Success);
+        Assert.Equal(1L, (long)result.Value!["Mutual"]);
+        Assert.Equal(2L, (long)result.Value!["Null"]);
+        Assert.Equal(3L, (long)result.Value!["Total"]);
+    }
+
+    [Fact]
+    public void DyadCensus_DirectedLayer_SelfLoopExcludedFromArcCounts()
+    {
+        var net = MakeNetwork(3);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Directed, EdgeType.Binary, true);
+        net.AddEdge("layer", 1, 1);
+        net.AddEdge("layer", 1, 2);
+
+        var result = Analyses.DyadCensus(net, "layer");
+
+        Assert.True(result.Success);
+        Assert.Equal(0L, (long)result.Value!["Mutual"]);
+        Assert.Equal(1L, (long)result.Value!["Asymmetric"]);
+        Assert.Equal(2L, (long)result.Value!["Null"]);
+        Assert.Equal(3L, (long)result.Value!["Total"]);
+    }
+
     // ── CommunityDetectionLouvain ────────────────────────────────────────────────────
 
     [Fact]
@@ -2229,13 +2266,34 @@ public class AnalysesTests
         net.AddEdge("layer", 3, 4);
         net.AddEdge("layer", 4, 5);
 
-        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
 
         Assert.True(result.Success);
         double bwMiddle = GetFloatAttr(net, 3, "bw");
         double bwEnd = GetFloatAttr(net, 1, "bw");
         Assert.Equal(0.0, bwEnd, precision: 6);
         Assert.True(bwMiddle > bwEnd);
+    }
+
+    [Fact]
+    public void BetweennessCentrality_PathGraph_MiddleNode_MatchesKnownExactValue()
+    {
+        // 1-2-3-4-5 undirected path. Node 3's normalized betweenness is the textbook
+        // value 4/6 = 0.6667: it sits on the unique shortest path for the 4 unordered
+        // pairs {1,4},{1,5},{2,4},{2,5}, out of (n-1)(n-2)/2 = 6 unordered pairs not
+        // involving node 3 itself. This pins down the normalization constant exactly,
+        // rather than only checking relative ordering against another node.
+        var net = MakeNetwork(5);
+        AddUndirectedLayer(net, "layer");
+        net.AddEdge("layer", 1, 2);
+        net.AddEdge("layer", 2, 3);
+        net.AddEdge("layer", 3, 4);
+        net.AddEdge("layer", 4, 5);
+
+        var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
+
+        Assert.True(result.Success);
+        Assert.Equal(4.0 / 6.0, GetFloatAttr(net, 3, "bw"), precision: 5);
     }
 
     [Fact]
@@ -2292,13 +2350,13 @@ public class AnalysesTests
         {
             var netSeq = MakeRingWithChordsNetwork(20);
             UserSettings.Set("maxthreads", 1);
-            Analyses.BetweennessCentrality(netSeq, new[] { "layer" }, "bw", directed: false);
+            Analyses.BetweennessCentrality(netSeq, new[] { "layer" }, "bw");
             Analyses.ClosenessCentrality(netSeq, new[] { "layer" }, "cl");
             Analyses.HarmonicCentrality(netSeq, new[] { "layer" }, "hm");
 
             var netPar = MakeRingWithChordsNetwork(20);
             UserSettings.Set("maxthreads", Math.Min(4, Environment.ProcessorCount));
-            Analyses.BetweennessCentrality(netPar, new[] { "layer" }, "bw", directed: false);
+            Analyses.BetweennessCentrality(netPar, new[] { "layer" }, "bw");
             Analyses.ClosenessCentrality(netPar, new[] { "layer" }, "cl");
             Analyses.HarmonicCentrality(netPar, new[] { "layer" }, "hm");
 
@@ -2325,7 +2383,7 @@ public class AnalysesTests
         {
             UserSettings.Set("maxthreads", 2);
             var net = MakeRingWithChordsNetwork(15);
-            var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw", directed: false);
+            var result = Analyses.BetweennessCentrality(net, new[] { "layer" }, "bw");
             Assert.True(result.Success);
         }
         finally

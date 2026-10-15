@@ -112,16 +112,21 @@ namespace Threadle.Core.Analysis
         }
 
         /// <summary>
-        /// Normalizes raw betweenness scores.
-        /// Directed: divide by (n-1)(n-2). Undirected: divide by (n-1)(n-2)/2.
+        /// Normalizes raw betweenness scores. raw[v] is accumulated by running Brandes' backward
+        /// pass from every node as source (AccumulateBFSCentralitiesForSources), which sums over
+        /// every ORDERED pair (s,t). For a directed graph that already matches the (n-1)(n-2)
+        /// denominator (the count of ordered pairs excluding v). For an undirected graph (or any
+        /// traversal where paths are symmetric, i.e. sigma_st(v) == sigma_ts(v)), each unordered
+        /// pair {s,t} is summed twice this way - once as (s,t), once as (t,s) - so the true,
+        /// unordered-pair sum is raw/2, which then divides by the unordered-pair count
+        /// (n-1)(n-2)/2. Algebraically (raw/2)/((n-1)(n-2)/2) == raw/(n-1)(n-2): the same
+        /// denominator as the directed case, so both directed and undirected always use (n-1)(n-2).
         /// When sampled (totalSources < n): scale up by n/totalSources.
         /// </summary>
-        internal static Dictionary<uint, double> FinalizeBetweenness(Dictionary<uint, double> raw, uint[] allNodeIds, int totalSources, bool directed)
+        internal static Dictionary<uint, double> FinalizeBetweenness(Dictionary<uint, double> raw, uint[] allNodeIds, int totalSources)
         {
             int n = allNodeIds.Length;
-            double norm = directed
-                ? (n - 1.0) * (n - 2.0)
-                : (n - 1.0) * (n - 2.0) / 2.0;
+            double norm = (n - 1.0) * (n - 2.0);
             double scale = (totalSources > 0 && totalSources < n) ? (double)n / totalSources : 1.0;
 
             var result = new Dictionary<uint, double>(n);
@@ -195,15 +200,14 @@ namespace Threadle.Core.Analysis
         }
 
         /// <summary>
-        /// Normalizes raw edge betweenness scores, using the same bound as node betweenness: divide
-        /// by (n-1)(n-2) for directed layers, (n-1)(n-2)/2 for undirected. When sampled
-        /// (totalSources &lt; n): scale up by n/totalSources.
+        /// Normalizes raw edge betweenness scores. See FinalizeBetweenness for why both the
+        /// directed and undirected case use the same (n-1)(n-2) denominator once the implicit
+        /// double-counting in the undirected (symmetric-path) case is correctly accounted for.
+        /// When sampled (totalSources &lt; n): scale up by n/totalSources.
         /// </summary>
-        internal static Dictionary<(uint From, uint To), double> FinalizeEdgeBetweenness(Dictionary<(uint From, uint To), double> raw, int n, int totalSources, bool directed)
+        internal static Dictionary<(uint From, uint To), double> FinalizeEdgeBetweenness(Dictionary<(uint From, uint To), double> raw, int n, int totalSources)
         {
-            double norm = directed
-                ? (n - 1.0) * (n - 2.0)
-                : (n - 1.0) * (n - 2.0) / 2.0;
+            double norm = (n - 1.0) * (n - 2.0);
             double scale = (totalSources > 0 && totalSources < n) ? (double)n / totalSources : 1.0;
 
             var result = new Dictionary<(uint From, uint To), double>(raw.Count);

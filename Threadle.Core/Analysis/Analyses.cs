@@ -510,7 +510,7 @@ namespace Threadle.Core.Analysis
             var lr = network.GetOneModeLayerForRead(layerName);
             if (!lr.Success)
                 return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
-            var result = NetworkLevelFunctions.DyadCensus(network.Nodeset.Count, lr.Value!);
+            var result = NetworkLevelFunctions.DyadCensus(network.Nodeset.NodeIdArray, lr.Value!);
             return OperationResult<Dictionary<string, object>>.Ok(result);
         }
 
@@ -561,12 +561,15 @@ namespace Threadle.Core.Analysis
 
         /// <summary>
         /// Calculates betweenness centrality for all nodes using Brandes' algorithm with
-        /// hyperedge-aware BFS. Normalizes by (n-1)(n-2) for directed, halved for undirected.
-        /// When sampleSize > 0, scales the result by n/sampleSize. The per-source BFS passes
-        /// (shared with ClosenessCentrality and HarmonicCentrality) run in parallel across up to
-        /// 'maxthreads' threads (see 'setting()').
+        /// hyperedge-aware BFS. Normalizes by (n-1)(n-2), the count of ordered pairs excluding
+        /// v; this holds for both directed and undirected layers, since the undirected
+        /// accumulation already sums each unordered pair twice (once per direction), which
+        /// cancels against halving the ordered-pair count. When sampleSize > 0, scales the
+        /// result by n/sampleSize. The per-source BFS passes (shared with ClosenessCentrality
+        /// and HarmonicCentrality) run in parallel across up to 'maxthreads' threads (see
+        /// 'setting()').
         /// </summary>
-        public static OperationResult BetweennessCentrality(Network network, string[]? layerNames, string? attrName = null, int sampleSize = 0, bool directed = true, EdgeTraversal traversal = EdgeTraversal.Out)
+        public static OperationResult BetweennessCentrality(Network network, string[]? layerNames, string? attrName = null, int sampleSize = 0, EdgeTraversal traversal = EdgeTraversal.Out)
         {
             if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
                 return err!;
@@ -576,7 +579,7 @@ namespace Threadle.Core.Analysis
 
             var (bw, _, _, _) = CentralityFunctions.AccumulateBFSCentralitiesForSources(sources, one, dynTwo, statTwo, traversal);
 
-            var final = CentralityFunctions.FinalizeBetweenness(bw, nodeIds, sources.Length, directed);
+            var final = CentralityFunctions.FinalizeBetweenness(bw, nodeIds, sources.Length);
             attrName = string.IsNullOrEmpty(attrName) ? "betweenness" : attrName;
             var attrDict = final.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
             return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
@@ -588,13 +591,13 @@ namespace Threadle.Core.Analysis
         /// layer). Uses the same Brandes-based approach as BetweennessCentrality — each predecessor
         /// edge on a shortest-path DAG is credited with the same contribution normally folded into
         /// node betweenness — so it shares that command's cost profile and 'sampleSize'-based
-        /// approximation for large networks (Brandes &amp; Pich 2007), and normalizes the same way:
-        /// divide by (n-1)(n-2) for directed layers, (n-1)(n-2)/2 for undirected (when normalize is
-        /// true, the default), scaled by n/sampleSize when sampled. Kept as a separate command from
+        /// approximation for large networks (Brandes &amp; Pich 2007). Kept as a separate command from
         /// BetweennessCentrality rather than an option on it, since edge identity — unlike node
         /// identity — has no clean mapping across combined layers, so this only operates on a single
-        /// named layer rather than a combined set. The per-source BFS passes run in parallel across
-        /// up to 'maxthreads' threads (see 'setting()').
+        /// named layer rather than a combined set. Normalizes the same way as BetweennessCentrality:
+        /// divide by (n-1)(n-2) regardless of directionality (see that method's remarks), when
+        /// normalize is true (the default), scaled by n/sampleSize when sampled. The per-source BFS
+        /// passes run in parallel across up to 'maxthreads' threads (see 'setting()').
         /// </summary>
         public static OperationResult EdgeBetweennessCentrality(Network network, string layerName, string newLayerName, int sampleSize = 0, bool normalize = true)
         {
@@ -610,7 +613,7 @@ namespace Threadle.Core.Analysis
 
             var raw = CentralityFunctions.AccumulateEdgeBetweennessForSources(sources, layer, EdgeTraversal.Out);
             var final = normalize
-                ? CentralityFunctions.FinalizeEdgeBetweenness(raw, nodeIds.Length, sources.Length, layer.IsDirectional)
+                ? CentralityFunctions.FinalizeEdgeBetweenness(raw, nodeIds.Length, sources.Length)
                 : raw;
 
             LayerOneMode newLayer = new LayerOneMode(newLayerName, layer.Directionality, EdgeType.Valued, layer.Selfties);

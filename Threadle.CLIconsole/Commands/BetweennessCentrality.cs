@@ -15,12 +15,12 @@ namespace Threadle.CLIconsole.Commands
         /// <summary>
         /// Gets the command syntax definition as shown in help and usage output.
         /// </summary>
-        public string Syntax => "betweennesscentrality(network=[var:network], *layernames=[semicolon-separated], *attrname=[str], *samplesize=[int], *directed=['true'(default),'false'], *traversal=['out'(default),'in','both'])";
+        public string Syntax => "betweennesscentrality(network=[var:network], *layernames=[semicolon-separated], *attrname=[str], *samplesize=[int], *traversal=['out'(default),'in','both'])";
 
         /// <summary>
         /// Gets a human-readable description of what the command does.
         /// </summary>
-        public string Description => "Calculates betweenness centrality for each node using Brandes' algorithm and stores the result as a node attribute. Normalized by (n-1)(n-2) for directed networks, halved for undirected. When samplesize > 0, a random subset of source nodes is used and scores are scaled accordingly. The per-source BFS passes run in parallel across up to 'maxthreads' threads (see 'setting()'). See Brandes (2001); sampling: Brandes & Pich (2007).";
+        public string Description => "Calculates betweenness centrality for each node using Brandes' algorithm and stores the result as a node attribute. Normalized by (n-1)(n-2), for both directed and undirected networks. When samplesize > 0, a random subset of source nodes is used and scores are scaled accordingly. The per-source BFS passes run in parallel across up to 'maxthreads' threads (see 'setting()'). See Brandes (2001); sampling: Brandes & Pich (2007).";
 
         /// <summary>
         /// Gets a value indicating whether this command produces output that must be assigned to a variable.
@@ -39,7 +39,6 @@ namespace Threadle.CLIconsole.Commands
             string layerNames = command.GetArgumentParseString("layernames", "");
             string? attrName = command.GetArgumentParseString("attrname", "");
             int sampleSize = command.GetArgumentParseInt("samplesize", 0);
-            bool directed = command.GetArgumentParseBool("directed", true);
             string traversalStr = command.GetArgumentParseString("traversal", "out");
             EdgeTraversal traversal = traversalStr.ToLowerInvariant() switch
             {
@@ -49,7 +48,7 @@ namespace Threadle.CLIconsole.Commands
             };
             string[]? layers = layerNames.Length > 0 ? layerNames.Split(';') : null;
             string? attr = attrName.Length > 0 ? attrName : null;
-            return CommandResult.FromOperationResult(Analyses.BetweennessCentrality(network, layers, attr, sampleSize, directed, traversal));
+            return CommandResult.FromOperationResult(Analyses.BetweennessCentrality(network, layers, attr, sampleSize, traversal));
         }
     }
 }

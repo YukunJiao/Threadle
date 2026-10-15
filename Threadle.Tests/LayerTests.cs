@@ -643,6 +643,24 @@ public class LayerTests
     }
 
     [Fact]
+    public void OneModeLayer_SymmetricSelftie_RemoveEdge_ReportsSuccess()
+    {
+        // A self-tie on a symmetric layer is stored once, in the single edgeset shared
+        // by both "sides" of (node1Id == node2Id): removing it must not be treated as
+        // two separate removals (outbound then inbound), which would misreport failure
+        // on the second, already-gone attempt even though the tie was actually removed.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+
+        var result = net.RemoveEdge("friends", 1, 1);
+
+        Assert.True(result.Success);
+        Assert.False(net.Layers["friends"].CheckEdgeExists(1, 1));
+    }
+
+    [Fact]
     public void TwoModeLayer_PackedAndDynamic_GetHyperedgeNodeIds_Identical()
     {
         var ns = MakeNodeset();

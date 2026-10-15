@@ -545,7 +545,19 @@ namespace Threadle.Core.Model
         {
             if (!Edgesets.TryGetValue(node1Id, out var edgesetNode1) || !Edgesets.TryGetValue(node2Id, out var edgesetNode2))
                 return OperationResult.Fail("EdgeNotFound", $"No edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}' found.");
-            if (!edgesetNode1.RemoveOutboundEdge(node2Id).Success || !edgesetNode2.RemoveInboundEdge(node1Id).Success)
+
+            // A self-tie in a symmetric layer is stored once, in the single edgeset shared by
+            // both "sides" (node1Id == node2Id, so edgesetNode1 and edgesetNode2 are the same
+            // object): removing it via both RemoveOutboundEdge and RemoveInboundEdge would try
+            // to remove the same already-gone entry twice, misreporting failure on the second
+            // attempt even though the first one actually succeeded. Directed self-loops don't
+            // have this issue - they're stored in separate outbound/inbound lists - so only the
+            // symmetric case needs the single-call path.
+            bool removed = IsSymmetric && node1Id == node2Id
+                ? edgesetNode1.RemoveOutboundEdge(node2Id).Success
+                : edgesetNode1.RemoveOutboundEdge(node2Id).Success && edgesetNode2.RemoveInboundEdge(node1Id).Success;
+
+            if (!removed)
                 return OperationResult.Fail("EdgeNotFound", $"No edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}' found.");
             return OperationResult.Ok($"Removed edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}'.");
         }
