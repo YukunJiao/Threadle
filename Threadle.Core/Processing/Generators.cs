@@ -207,7 +207,6 @@ namespace Threadle.Core.Processing
             if (layer.Selfties)
                 return OperationResult.Fail("ConstraintLayerAllowsSelfties", $"Layer '{layerName}' in network '{network.Name}' can't allow for selfties.");
 
-            layer.ClearLayer();
             Nodeset nodeset = network.Nodeset;
 
             // Get an array of all node ids
@@ -216,6 +215,8 @@ namespace Threadle.Core.Processing
 
             if (m < 0 || m >= n)
                 return OperationResult.Fail("InvalidArgument", $"The attachment parameter (m) is {m}: it must be between 0 and the size of the network.");
+
+            layer.ClearLayer();
 
             long totalEdges = (long)m * (m + 1) / 2 + m * (n - m - 1);
 
