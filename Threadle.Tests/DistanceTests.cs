@@ -217,285 +217,399 @@ public class DistanceTests
         Assert.InRange(count3, 750, 999);
     }
 
-    // ── RandomWalkNodeAttributeDistances ─────────────────────────────────────
+    // ── GetRandomAlter — layerweights ──────────────────────────────────────────
 
     [Fact]
-    public void RwDistances_ValidNetworkAndAttr_Succeeds()
+    public void GetRandomAlter_LayerWeights_HighWeightLayerPickedMoreOften()
     {
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
+        // layer1 weight 8, layer2 weight 16: layer2's alter (3) should be picked ~2x as often
+        // as layer1's alter (2).
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null, walkfactor: 2f);
+        int count2 = 0, count3 = 0;
+        for (int i = 0; i < 3000; i++)
+        {
+            var r = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [8f, 16f]);
+            Assert.True(r.Success);
+            if (r.Value == 2) count2++;
+            else if (r.Value == 3) count3++;
+        }
+        Assert.True(count3 > count2 * 1.4,
+            $"Expected alter 3 (layer2, weight 16) ~2x more frequent than alter 2 (layer1, weight 8), got {count2} vs {count3}");
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeights_IneligibleLayerExcludedFromWeighting()
+    {
+        // Node 1 has no alters in layer2 at all. Despite layer2's much larger weight, the pick
+        // must still succeed and come from layer1 (the only eligible layer for this node).
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f, 100f]);
+
+        Assert.True(result.Success);
+        Assert.Equal(2u, result.Value);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeights_IgnoredWhenBalancedFalse()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: false, layerWeights: [8f, 16f]);
 
         Assert.True(result.Success);
     }
 
     [Fact]
-    public void RwDistances_UnknownAttribute_Fails()
+    public void GetRandomAlter_LayerWeightsWithoutLayerNames_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        net.AddEdge("layer1", 1, 2);
+
+        var result = Analyses.GetRandomAlter(net, 1, null, EdgeTraversal.Both, balanced: true, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeightsLengthMismatch_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f]);
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void GetRandomAlter_LayerWeightsNonPositive_Fails()
+    {
+        var net = MakeNetwork(3);
+        AddUndirected(net, "layer1");
+        AddUndirected(net, "layer2");
+        net.AddEdge("layer1", 1, 2);
+        net.AddEdge("layer2", 1, 3);
+
+        var result = Analyses.GetRandomAlter(net, 1, ["layer1", "layer2"], EdgeTraversal.Both, balanced: true, layerWeights: [1f, 0f]);
+
+        Assert.False(result.Success);
+    }
+
+
+    // ── RandomWalkNodeAttributeFirstPassageTimeDistances (parallelized initial pass) ─────
+
+    [Fact]
+    public void RwFpt_ValidNetworkAndAttr_Succeeds()
+    {
+        var net = MakeCompleteNetwork(10);
+        AssignTwoGroupCharAttr(net, "role", 5);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 2f, 0, false, false);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RwFpt_UnknownAttribute_Fails()
     {
         var net = MakeCompleteNetwork(4);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "nonexistent", 2, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "nonexistent", 2, null, 1f, 0, false, false);
 
         Assert.False(result.Success);
         Assert.Equal("AttributeUnknown", result.Code);
     }
 
     [Fact]
-    public void RwDistances_FloatAttribute_Fails()
+    public void RwFpt_FloatAttribute_Fails()
     {
         var net = MakeCompleteNetwork(4);
         net.Nodeset.DefineNodeAttribute("score", "float");
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "score", 2, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "score", 2, null, 1f, 0, false, false);
 
         Assert.False(result.Success);
         Assert.Equal("InvalidAttributeType", result.Code);
     }
 
     [Fact]
-    public void RwDistances_UnknownLayerName_Fails()
+    public void RwFpt_UnknownLayerName_Fails()
     {
         var net = MakeCompleteNetwork(4);
         AssignTwoGroupCharAttr(net, "role", 2);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 2, ["nonexistent"]);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 2, ["nonexistent"], 1f, 0, false, false);
 
         Assert.False(result.Success);
         Assert.Equal("LayerNotFound", result.Code);
     }
 
     [Fact]
-    public void RwDistances_SaveStepsFalse_StepLayersAbsent()
-    {
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null, savesteps: false);
-
-        var resultNet = (Network)result.Value!.MainStructure;
-        for (int s = 1; s <= 3; s++)
-            Assert.False(resultNet.Layers.ContainsKey("role_steps_" + s));
-    }
-
-    [Fact]
-    public void RwDistances_SaveStepsTrue_StepLayersPresent()
-    {
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null, savesteps: true);
-
-        var resultNet = (Network)result.Value!.MainStructure;
-        for (int s = 1; s <= 3; s++)
-            Assert.True(resultNet.Layers.ContainsKey("role_steps_" + s));
-    }
-
-    [Fact]
-    public void RwDistances_ResultNodesetHasOneNodePerUniqueValue()
+    public void RwFpt_ResultNodesetHasOneNodePerUniqueValue()
     {
         var net = MakeCompleteNetwork(12);
         net.Nodeset.DefineNodeAttribute("role", "char");
         foreach (uint id in net.Nodeset.NodeIdArray)
             net.Nodeset.SetNodeAttribute(id, "role", id <= 4 ? "a" : id <= 8 ? "b" : "c");
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 2, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 2, null, 2f, 0, false, false);
 
         Assert.Equal(3, GetResultNodeset(result.Value!).Count);
     }
 
     [Fact]
-    public void RwDistances_ResultNodesetLabelsMatchAttributeValues()
+    public void RwFpt_MinPairObsZero_SkipsTargetedRestarts_Succeeds()
+    {
+        var net = MakeCompleteNetwork(10);
+        AssignTwoGroupCharAttr(net, "role", 5);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 2f, 0, false, false);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RwFpt_MinPairObsPositive_TriggersTargetedRestarts_Succeeds()
+    {
+        // Small, heavily imbalanced groups so the initial pass alone is unlikely to satisfy minPairObs,
+        // exercising the (now randomly-sampled) targeted-restart phase.
+        var net = MakeCompleteNetwork(12);
+        AssignTwoGroupCharAttr(net, "role", 1);
+
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 1f, 5, false, false);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RwFpt_ReturnHistogramsTrue_HistogramsPopulated()
+    {
+        var net = MakeCompleteNetwork(10);
+        AssignTwoGroupCharAttr(net, "role", 5);
+
+        var (result, histograms) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 3f, 0, false, false, returnHistograms: true);
+
+        Assert.True(result.Success);
+        Assert.NotNull(histograms);
+        Assert.NotEmpty(histograms!);
+    }
+
+    [Fact]
+    public void RwFpt_MaxThreadsOne_Succeeds()
+    {
+        try
+        {
+            UserSettings.Set("maxthreads", 1);
+            var net = MakeCompleteNetwork(10);
+            AssignTwoGroupCharAttr(net, "role", 5);
+
+            var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 2f, 0, false, false);
+
+            Assert.True(result.Success);
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
+    }
+
+    [Fact]
+    public void RwFpt_MaxThreadsGreaterThanOne_Succeeds()
+    {
+        if (Environment.ProcessorCount < 2)
+            return; // nothing extra to exercise on a single-core runner
+
+        try
+        {
+            UserSettings.Set("maxthreads", 2);
+            var net = MakeCompleteNetwork(20);
+            AssignTwoGroupCharAttr(net, "role", 10);
+
+            var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 3f, 0, false, false);
+
+            Assert.True(result.Success);
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
+    }
+
+    [Fact]
+    public void RwFpt_LayerWeightsWithoutLayers_Fails()
     {
         var net = MakeCompleteNetwork(6);
         AssignTwoGroupCharAttr(net, "role", 3);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 2, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, null, 2f, 0, true, false, layerWeights: [1f]);
 
-        var resultNs = GetResultNodeset(result.Value!);
-        var labels = resultNs.NodeIdArray
-            .Select(id => resultNs.GetNodeAttributeString(id, "label").Value!)
-            .OrderBy(s => s)
-            .ToList();
-        Assert.Equal(new[] { "a", "b" }, labels);
+        Assert.False(result.Success);
     }
 
     [Fact]
-    public void RwDistances_AvgDistanceLayerPresent()
+    public void RwFpt_LayerWeightsLengthMismatch_Fails()
     {
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
+        var net = MakeNetwork(6);
+        AddUndirected(net, "layerA");
+        AddUndirected(net, "layerB");
+        for (uint i = 1; i <= 6; i++)
+            for (uint j = i + 1; j <= 6; j++)
+            {
+                net.AddEdge("layerA", i, j);
+                net.AddEdge("layerB", i, j);
+            }
+        AssignTwoGroupCharAttr(net, "role", 3);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, ["layerA", "layerB"], 2f, 0, true, false, layerWeights: [1f]);
 
-        Assert.True(((Network)result.Value!.MainStructure).Layers.ContainsKey("role_avgdistance"));
+        Assert.False(result.Success);
     }
 
     [Fact]
-    public void RwDistances_StdevDistanceLayerPresent()
+    public void RwFpt_LayerWeights_Succeeds()
     {
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
+        var net = MakeNetwork(6);
+        AddUndirected(net, "layerA");
+        AddUndirected(net, "layerB");
+        for (uint i = 1; i <= 6; i++)
+            for (uint j = i + 1; j <= 6; j++)
+            {
+                net.AddEdge("layerA", i, j);
+                net.AddEdge("layerB", i, j);
+            }
+        AssignTwoGroupCharAttr(net, "role", 3);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null);
+        var (result, _) = Distance.RandomWalkNodeAttributeFirstPassageTimeDistances(net, "role", 3, ["layerA", "layerB"], 2f, 0, true, false, layerWeights: [1f, 3f]);
 
-        Assert.True(((Network)result.Value!.MainStructure).Layers.ContainsKey("role_stdevdistance"));
+        Assert.True(result.Success, result.Message);
     }
 
-    [Fact]
-    public void RwDistances_MaxStepsOne_AllAvgDistancesEqualOne()
+    // ── ShortestPathsNodeAttributeDistances (parallelized per-source BFS) ────────
+
+    /// <summary>Builds an n-node ring (1-2-...-n-1), undirected binary.</summary>
+    private static Network MakeRingNetwork(int n, string layerName = "layer")
     {
-        // With only one step level, avgDistance = (1 × count) / count = 1.0 always
-        var net = MakeCompleteNetwork(10);
-        AssignTwoGroupCharAttr(net, "role", 5);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 1, null, walkfactor: 5f);
-
-        var avgLayer = GetAvgLayer(result.Value!, "role");
-        foreach (var (_, alters, values) in avgLayer.GetAllEgoData())
+        var net = MakeNetwork(n);
+        AddUndirected(net, layerName);
+        for (int i = 1; i <= n; i++)
         {
-            ReadOnlySpan<float> vals = values.Span;
-            for (int k = 0; k < vals.Length; k++)
-                Assert.Equal(1.0f, vals[k], precision: 5);
+            int next = i == n ? 1 : i + 1;
+            net.AddEdge(layerName, (uint)i, (uint)next);
         }
+        return net;
     }
 
-    [Fact]
-    public void RwDistances_CharAttribute_Succeeds()
+    /// <summary>Assigns a char attribute based on (nodeId mod modulus), as category labels '0'..'modulus-1'.</summary>
+    private static void AssignModuloGroupCharAttr(Network net, string attrName, int modulus)
     {
-        var net = MakeCompleteNetwork(8);
-        AssignTwoGroupCharAttr(net, "role", 4);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 2, null);
-
-        Assert.True(result.Success);
-    }
-
-    [Fact]
-    public void RwDistances_StringAttribute_Succeeds()
-    {
-        var net = MakeCompleteNetwork(8);
-        net.Nodeset.DefineNodeAttribute("job", "string");
+        net.Nodeset.DefineNodeAttribute(attrName, "char");
         foreach (uint id in net.Nodeset.NodeIdArray)
-            net.Nodeset.SetNodeAttribute(id, "job", id <= 4 ? "doctor" : "lawyer");
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "job", 2, null);
-
-        Assert.True(result.Success);
-        Assert.Equal(2, GetResultNodeset(result.Value!).Count);
+            net.Nodeset.SetNodeAttribute(id, attrName, (id % (uint)modulus).ToString());
     }
 
     [Fact]
-    public void RwDistances_IntAttribute_Succeeds()
+    public void ShortestPathsNodeAttributeDistances_CompleteGraph_ComputesExpectedMeanAndCount()
     {
-        var net = MakeCompleteNetwork(6);
-        net.Nodeset.DefineNodeAttribute("group", "int");
-        foreach (uint id in net.Nodeset.NodeIdArray)
-            net.Nodeset.SetNodeAttribute(id, "group", id <= 3 ? "1" : "2");
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "group", 2, null);
-
-        Assert.True(result.Success);
-        Assert.Equal(2, GetResultNodeset(result.Value!).Count);
-    }
-
-    [Fact]
-    public void RwDistances_CompleteGraph_AllAvgDistancesRoughlyEqual()
-    {
-        // On a complete graph the random walk mixes instantly — there is no structural
-        // distinction between groups, so all pairwise avgDistances should be roughly equal.
-        var net = MakeCompleteNetwork(20);
-        AssignTwoGroupCharAttr(net, "role", 10);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 3, null, walkfactor: 10f);
-
-        var avgLayer = GetAvgLayer(result.Value!, "role");
-        List<float> allValues = [];
-        foreach (var (_, alters, values) in avgLayer.GetAllEgoData())
-        {
-            ReadOnlySpan<float> vals = values.Span;
-            for (int k = 0; k < vals.Length; k++)
-                allValues.Add(vals[k]);
-        }
-        Assert.NotEmpty(allValues);
-        float min = allValues.Min();
-        float max = allValues.Max();
-        // All pairwise distances should be close to each other (complete graph, uniform mixing)
-        Assert.True(max - min < 0.5f, $"Expected all avgDistances roughly equal, got min={min:F2} max={max:F2}");
-    }
-
-    [Fact]
-    public void RwDistances_DisconnectedComponents_NoCrossGroupEdgesInAvgDistance()
-    {
-        // Two fully connected cliques with no bridge: walks can never cross.
-        var net = MakeNetwork(8);
-        AddUndirected(net, "layer");
-        for (uint i = 1; i <= 4; i++)
-            for (uint j = i + 1; j <= 4; j++)
-                net.AddEdge("layer", i, j);
-        for (uint i = 5; i <= 8; i++)
-            for (uint j = i + 1; j <= 8; j++)
-                net.AddEdge("layer", i, j);
-        AssignTwoGroupCharAttr(net, "role", 4);
-
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 5, null, walkfactor: 10f);
-
-        var resultNs = GetResultNodeset(result.Value!);
-        uint? nodeA = null, nodeB = null;
-        foreach (uint id in resultNs.NodeIdArray)
-        {
-            string label = resultNs.GetNodeAttributeString(id, "label").Value!;
-            if (label == "a") nodeA = id;
-            if (label == "b") nodeB = id;
-        }
-        Assert.NotNull(nodeA);
-        Assert.NotNull(nodeB);
-
-        var avgLayer = GetAvgLayer(result.Value!, "role");
-        Assert.Equal(0f, avgLayer.GetEdgeValue(nodeA.Value, nodeB.Value));
-        Assert.Equal(0f, avgLayer.GetEdgeValue(nodeB.Value, nodeA.Value));
-    }
-
-    [Fact]
-    public void RwDistances_MissingAttributeValues_MissingCategoryAppearsLast()
-    {
-        // Nodes 1-2: 'a', node 3: 'b', node 4: no attribute → "(missing)" should be last
+        // Complete graph on 4 nodes: every distinct pair is at distance 1. Nodes 1,2 -> 'a'
+        // (category node id 0, alphabetically first), nodes 3,4 -> 'b' (category node id 1).
         var net = MakeCompleteNetwork(4);
-        net.Nodeset.DefineNodeAttribute("role", "char");
-        net.Nodeset.SetNodeAttribute(1, "role", "a");
-        net.Nodeset.SetNodeAttribute(2, "role", "a");
-        net.Nodeset.SetNodeAttribute(3, "role", "b");
-        // Node 4: deliberately left without attribute
+        AssignTwoGroupCharAttr(net, "grp", 2);
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 2, null);
+        var result = Distance.ShortestPathsNodeAttributeDistances(net, "grp", null);
 
-        var resultNs = GetResultNodeset(result.Value!);
-        Assert.Equal(3, resultNs.Count);
-        uint lastId = resultNs.NodeIdArray.Max();
-        Assert.Equal("(missing)", resultNs.GetNodeAttributeString(lastId, "label").Value!);
+        Assert.True(result.Success);
+        var resultNet = (Network)result.Value!.MainStructure;
+        var avgLayer = (ILayerOneMode)resultNet.Layers["grp_sp_avg"];
+        var countLayer = (ILayerOneMode)resultNet.Layers["grp_sp_count"];
+
+        Assert.Equal(1.0f, avgLayer.GetEdgeValue(0, 1), 5);
+        Assert.Equal(4f, countLayer.GetEdgeValue(0, 1), 5);
     }
 
     [Fact]
-    public void RwDistances_LabelsSortedAlphabetically()
+    public void ShortestPathsNodeAttributeDistances_NonExistentAttribute_Fails()
     {
-        // Assign 'c', 'a', 'b' in non-alphabetical order; result nodes should be ordered a, b, c
-        var net = MakeCompleteNetwork(6);
-        net.Nodeset.DefineNodeAttribute("role", "char");
-        uint[] ids = net.Nodeset.NodeIdArray;
-        net.Nodeset.SetNodeAttribute(ids[0], "role", "c");
-        net.Nodeset.SetNodeAttribute(ids[1], "role", "c");
-        net.Nodeset.SetNodeAttribute(ids[2], "role", "a");
-        net.Nodeset.SetNodeAttribute(ids[3], "role", "a");
-        net.Nodeset.SetNodeAttribute(ids[4], "role", "b");
-        net.Nodeset.SetNodeAttribute(ids[5], "role", "b");
+        var net = MakeCompleteNetwork(3);
+        var result = Distance.ShortestPathsNodeAttributeDistances(net, "nonexistent", null);
+        Assert.False(result.Success);
+    }
 
-        var result = Distance.RandomWalkNodeAttributeDistances(net, "role", 1, null);
+    [Fact]
+    public void ShortestPathsNodeAttributeDistances_MaxThreadsOneVsMany_ProduceSameValues()
+    {
+        if (Environment.ProcessorCount < 2)
+            return; // nothing extra to exercise on a single-core runner
 
-        var resultNs = GetResultNodeset(result.Value!);
-        string[] labels = resultNs.NodeIdArray
-            .OrderBy(id => id)
-            .Select(id => resultNs.GetNodeAttributeString(id, "label").Value!)
-            .ToArray();
-        Assert.Equal(new[] { "a", "b", "c" }, labels);
+        string[] metrics = ["sp_avg", "sp_q1", "sp_median", "sp_q3", "sp_stdev", "sp_se", "sp_count"];
+
+        try
+        {
+            var netSeq = MakeRingNetwork(20);
+            AssignModuloGroupCharAttr(netSeq, "grp", 3);
+            UserSettings.Set("maxthreads", 1);
+            var seqResult = Distance.ShortestPathsNodeAttributeDistances(netSeq, "grp", null);
+
+            var netPar = MakeRingNetwork(20);
+            AssignModuloGroupCharAttr(netPar, "grp", 3);
+            UserSettings.Set("maxthreads", Math.Min(4, Environment.ProcessorCount));
+            var parResult = Distance.ShortestPathsNodeAttributeDistances(netPar, "grp", null);
+
+            Assert.True(seqResult.Success);
+            Assert.True(parResult.Success);
+
+            var seqNet = (Network)seqResult.Value!.MainStructure;
+            var parNet = (Network)parResult.Value!.MainStructure;
+
+            foreach (string metric in metrics)
+            {
+                var seqLayer = (ILayerOneMode)seqNet.Layers["grp_" + metric];
+                var parLayer = (ILayerOneMode)parNet.Layers["grp_" + metric];
+                for (uint from = 0; from < 3; from++)
+                    for (uint to = 0; to < 3; to++)
+                        if (from != to)
+                            Assert.Equal(seqLayer.GetEdgeValue(from, to), parLayer.GetEdgeValue(from, to), 4);
+            }
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
+    }
+
+    [Fact]
+    public void ShortestPathsNodeAttributeDistances_MaxThreadsGreaterThanOne_Succeeds()
+    {
+        if (Environment.ProcessorCount < 2)
+            return;
+
+        try
+        {
+            UserSettings.Set("maxthreads", 2);
+            var net = MakeRingNetwork(15);
+            AssignModuloGroupCharAttr(net, "grp", 3);
+            var result = Distance.ShortestPathsNodeAttributeDistances(net, "grp", null);
+            Assert.True(result.Success);
+        }
+        finally
+        {
+            UserSettings.MaxDegreeOfParallelism = -1;
+        }
     }
 }

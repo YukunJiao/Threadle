@@ -84,9 +84,37 @@ namespace Threadle.Core.Model
         /// <summary>
         /// Returns the number of edges in the layer.
         /// </summary>
-        public ulong NbrEdges => (ulong)(_neighborNodeIds.Length / (IsDirectional ? 1 : 2));
+        public ulong NbrEdges
+        {
+            get
+            {
+                if (IsDirectional)
+                    return (ulong)_neighborNodeIds.Length;
+
+                // Undirected: an ordinary edge is stored once per endpoint (so divide the total by
+                // 2), but a self-loop is stored only once overall (on its one node), so it must not
+                // be halved along with everything else.
+                if (!Selfties)
+                    return (ulong)(_neighborNodeIds.Length / 2);
+                ulong selfLoopCount = 0;
+                foreach (var (egoId, index) in _nodeIdToIndexMapper)
+                {
+                    int start = _offsets[index], end = _offsets[index + 1];
+                    if (Array.BinarySearch(_neighborNodeIds, start, end - start, egoId) >= 0)
+                        selfLoopCount++;
+                }
+                return ((ulong)_neighborNodeIds.Length - selfLoopCount) / 2 + selfLoopCount;
+            }
+        }
 
         public int NodeCount => _nodeIdToIndexMapper.Count;
+
+        /// <summary>
+        /// Returns the node ids that have at least one edge in this layer. Used internally (e.g. by
+        /// <see cref="LayerOneMode.FromStatic"/>) to find self-loops that GetAllEgoData() excludes for
+        /// symmetric layers.
+        /// </summary>
+        internal IEnumerable<uint> NodeIds => _nodeIdToIndexMapper.Keys;
 
         /// <summary>
         /// Returns metadata about the layer (as a dictionary of objects).
@@ -119,7 +147,8 @@ namespace Threadle.Core.Model
         {
             bool isSymmetric = directionality == EdgeDirectionality.Undirected;
 
-            // For symmetric: expand half-adjacency to full-adjacency
+            // For symmetric: expand half-adjacency to full-adjacency. A self-loop (alter == ego) is
+            // its own "other side" and must only be added once, not twice.
             var adjList = new Dictionary<uint, List<uint>>(rows.Count * 2);
             foreach (var (ego, alters) in rows)
             {
@@ -128,7 +157,7 @@ namespace Threadle.Core.Model
                 foreach (uint alter in alters)
                 {
                     egoList.Add(alter);
-                    if (isSymmetric)
+                    if (isSymmetric && alter != ego)
                     {
                         if (!adjList.TryGetValue(alter, out var alterList))
                             adjList[alter] = alterList = [];
@@ -167,6 +196,7 @@ namespace Threadle.Core.Model
         {
             bool isSymmetric = directionality == EdgeDirectionality.Undirected;
 
+            // A self-loop (alter == ego) is its own "other side" and must only be added once, not twice.
             var adjList = new Dictionary<uint, List<(uint alter, float value)>>(rows.Count * 2);
             foreach (var (ego, alters) in rows)
             {
@@ -175,7 +205,7 @@ namespace Threadle.Core.Model
                 foreach (var (alter, value) in alters)
                 {
                     egoList.Add((alter, value));
-                    if (isSymmetric)
+                    if (isSymmetric && alter != ego)
                     {
                         if (!adjList.TryGetValue(alter, out var alterList))
                             adjList[alter] = alterList = [];
@@ -421,7 +451,12 @@ namespace Threadle.Core.Model
                 }
                 for (int j = start; j < end; j++)
                 {
-                    if (IsSymmetric && _neighborNodeIds[j] <= egoId)
+                    // A self-loop (neighbor == egoId) is stored once, under its one node, with
+                    // no "other side" to dedupe against - unlike an ordinary undirected edge,
+                    // which appears once per endpoint and is kept only from the lower-id side.
+                    // Using <= here (instead of <) would always filter it out, even though
+                    // NbrEdges/GetEdgeValue/CheckEdgeExists all treat it as present.
+                    if (IsSymmetric && _neighborNodeIds[j] < egoId)
                         continue;
                     if (edges.Count >= limit)
                         return edges;
@@ -532,7 +567,9 @@ namespace Threadle.Core.Model
                 for (int j = start; j < end && edges.Count < n; j++)
                 {
                     uint alterId = _neighborNodeIds[j];
-                    if (IsSymmetric && alterId <= egoId)
+                    // See GetAllEdges: a self-loop (alterId == egoId) is stored once and must
+                    // not be filtered out by the same <= used to dedupe ordinary undirected edges.
+                    if (IsSymmetric && alterId < egoId)
                         continue;
                     edges.Add(IsBinary ? $"{egoId} {arrow} {alterId}" : $"{egoId} {arrow} {alterId} ({_values![j]})");
                 }

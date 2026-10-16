@@ -207,7 +207,6 @@ namespace Threadle.Core.Processing
             if (layer.Selfties)
                 return OperationResult.Fail("ConstraintLayerAllowsSelfties", $"Layer '{layerName}' in network '{network.Name}' can't allow for selfties.");
 
-            layer.ClearLayer();
             Nodeset nodeset = network.Nodeset;
 
             // Get an array of all node ids
@@ -216,6 +215,8 @@ namespace Threadle.Core.Processing
 
             if (m < 0 || m >= n)
                 return OperationResult.Fail("InvalidArgument", $"The attachment parameter (m) is {m}: it must be between 0 and the size of the network.");
+
+            layer.ClearLayer();
 
             long totalEdges = (long)m * (m + 1) / 2 + m * (n - m - 1);
 
@@ -285,13 +286,18 @@ namespace Threadle.Core.Processing
             if (layer.Selfties)
                 return OperationResult.Fail("ConstraintLayerAllowsSelfties", $"Layer '{layerName}' in network '{network.Name}' can't allow for selfties.");
 
-            layer.ClearLayer();
-
             Nodeset nodeset = network.Nodeset;
+            uint n = (uint)nodeset.Count;
+            // Each node must reach k/2 distinct forward and k/2 distinct backward neighbors
+            // without the two sets wrapping around and overlapping; k == n-1 (a complete graph)
+            // is the largest value that still keeps every neighbor distinct.
+            if (k >= n)
+                return OperationResult.Fail("InvalidArgument", $"The node degree (k) is {k}, but the network only has {n} node(s); k must be less than the number of nodes, or the ring lattice would need to connect each node to more distinct neighbors than exist.");
+
+            layer.ClearLayer();
 
             // Get an array of all node ids
             uint[] nodeIds = nodeset.NodeIdArray;
-            uint n = (uint)nodeIds.Length;
 
             // Create ring lattice
             for (int i = 0; i < n; i++)
@@ -396,9 +402,13 @@ namespace Threadle.Core.Processing
                 uint offsetInRow = (uint)(index - rowStartindex);
                 uint col = GetCol(row, offsetInRow, n, layer.Directionality, layer.Selfties);
 
-                // Bypass validation when creating edges
+                // Bypass validation when creating edges. A self-tie (row == col) on a symmetric
+                // layer is stored once, in the one edgeset shared by both "sides" - adding it as
+                // both outbound and inbound would append it twice to that single connection list
+                // (directed self-ties don't have this issue: outbound/inbound are separate lists).
                 layer.Edgesets[nodeIds[row]]._addOutboundEdge(nodeIds[col], 1);
-                layer.Edgesets[nodeIds[col]]._addInboundEdge(nodeIds[row], 1);
+                if (!(layer.IsSymmetric && row == col))
+                    layer.Edgesets[nodeIds[col]]._addInboundEdge(nodeIds[row], 1);
                 index++;
             }
             return OperationResult.Ok($"Erdös-Renyi network with p={p} generated in layer '{layerName}' in network '{network.Name}'.");

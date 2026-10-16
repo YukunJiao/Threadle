@@ -11,6 +11,14 @@ namespace Threadle.Core.Analysis
 {
     public static class Distance
     {
+        /// <summary>
+        /// Calculates exact shortest-path distances between all reachable node pairs and aggregates
+        /// them by node attribute category, returning mean/quartile/stdev/count layers per category
+        /// pair. Runs a full BFS from every node — O(N×(N+E)) — so it's only feasible for smaller
+        /// networks; use shortestpaths() with a sampled set of node pairs for larger ones. Each
+        /// source node's BFS and category-pair accumulation is independent of every other source's,
+        /// so this runs in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// </summary>
         public static OperationResult<StructureResult> ShortestPathsNodeAttributeDistances(Network network, string attrName, string[]? layerNames)
         {
             if (CheckLayersExist(network, layerNames) is OperationResult result)
@@ -48,51 +56,83 @@ namespace Threadle.Core.Analysis
             Dictionary<(uint from, uint to), (double sum, double sumSq, int count)> distDict = [];
             Dictionary<(uint from, uint to), Dictionary<int, int>> distHistDict = [];
             uint[] allNodeIds = nodeset.NodeIdArray;
+            var mergeLock = new object();
 
-            foreach (uint sourceNodeId in allNodeIds)
-            {
-                if (!labelToNodeId.TryGetValue(GetCategoryString(sourceNodeId), out uint sourceCatId))
-                    continue;
-
-                // BFS from sourceNodeId; use distances dict as visited set
-                Queue<uint> queue = [];
-                Dictionary<uint, int> distances = [];
-                queue.Enqueue(sourceNodeId);
-                distances[sourceNodeId] = 0;
-                while (queue.Count > 0)
+            // Each source node's BFS and category-pair accumulation is independent of every
+            // other source's, so this runs in parallel across up to 'maxthreads' threads (see
+            // 'setting()'), with thread-local partial accumulators merged under a lock after
+            // each thread's batch.
+            System.Threading.Tasks.Parallel.For(0, allNodeIds.Length, UserSettings.GetParallelOptions(),
+                () => (
+                    DistDict: new Dictionary<(uint from, uint to), (double sum, double sumSq, int count)>(),
+                    HistDict: new Dictionary<(uint from, uint to), Dictionary<int, int>>()
+                ),
+                (idx, loopState, local) =>
                 {
-                    uint current = queue.Dequeue();
-                    int nextDist = distances[current] + 1;
-                    foreach (var layer in resolvedLayers)
-                        foreach (uint neighborId in layer.GetNodeAlters(current, EdgeTraversal.Out))
-                        {
-                            if (!distances.ContainsKey(neighborId))
+                    uint sourceNodeId = allNodeIds[idx];
+                    if (!labelToNodeId.TryGetValue(GetCategoryString(sourceNodeId), out uint sourceCatId))
+                        return local;
+
+                    // BFS from sourceNodeId; use distances dict as visited set
+                    Queue<uint> queue = [];
+                    Dictionary<uint, int> distances = [];
+                    queue.Enqueue(sourceNodeId);
+                    distances[sourceNodeId] = 0;
+                    while (queue.Count > 0)
+                    {
+                        uint current = queue.Dequeue();
+                        int nextDist = distances[current] + 1;
+                        foreach (var layer in resolvedLayers)
+                            foreach (uint neighborId in layer.GetNodeAlters(current, EdgeTraversal.Out))
                             {
-                                distances[neighborId] = nextDist;
-                                queue.Enqueue(neighborId);
+                                if (!distances.ContainsKey(neighborId))
+                                {
+                                    distances[neighborId] = nextDist;
+                                    queue.Enqueue(neighborId);
+                                }
                             }
-                        }
-                }
+                    }
 
-                foreach (uint targetNodeId in allNodeIds)
+                    foreach (uint targetNodeId in allNodeIds)
+                    {
+                        if (targetNodeId == sourceNodeId)
+                            continue;
+                        if (!distances.TryGetValue(targetNodeId, out int dist))
+                            continue;
+                        if (!labelToNodeId.TryGetValue(GetCategoryString(targetNodeId), out uint targetCatId))
+                            continue;
+                        double d = dist;
+                        var key = (sourceCatId, targetCatId);
+                        if (local.DistDict.TryGetValue(key, out var existing))
+                            local.DistDict[key] = (existing.sum + d, existing.sumSq + d * d, existing.count + 1);
+                        else
+                            local.DistDict[key] = (d, d * d, 1);
+                        if (!local.HistDict.TryGetValue(key, out var hist))
+                            local.HistDict[key] = hist = [];
+                        hist[dist] = hist.TryGetValue(dist, out int binCount) ? binCount + 1 : 1;
+                    }
+                    return local;
+                },
+                local =>
                 {
-                    if (targetNodeId == sourceNodeId)
-                        continue;
-                    if (!distances.TryGetValue(targetNodeId, out int dist))
-                        continue;
-                    if (!labelToNodeId.TryGetValue(GetCategoryString(targetNodeId), out uint targetCatId))
-                        continue;
-                    double d = dist;
-                    var key = (sourceCatId, targetCatId);
-                    if (distDict.TryGetValue(key, out var existing))
-                        distDict[key] = (existing.sum + d, existing.sumSq + d * d, existing.count + 1);
-                    else
-                        distDict[key] = (d, d * d, 1);
-                    if (!distHistDict.TryGetValue(key, out var hist))
-                        distHistDict[key] = hist = [];
-                    hist[dist] = hist.TryGetValue(dist, out int binCount) ? binCount + 1 : 1;
-                }
-            }
+                    lock (mergeLock)
+                    {
+                        foreach (var (key, value) in local.DistDict)
+                        {
+                            if (distDict.TryGetValue(key, out var existing))
+                                distDict[key] = (existing.sum + value.sum, existing.sumSq + value.sumSq, existing.count + value.count);
+                            else
+                                distDict[key] = value;
+                        }
+                        foreach (var (key, hist) in local.HistDict)
+                        {
+                            if (!distHistDict.TryGetValue(key, out var globalHist))
+                                distHistDict[key] = globalHist = [];
+                            foreach (var (dist, binCount) in hist)
+                                globalHist[dist] = globalHist.TryGetValue(dist, out int existingCount) ? existingCount + binCount : binCount;
+                        }
+                    }
+                });
 
             Network networkResults = new Network(attrName + "_sp_results", nodesetResults);
             LayerOneMode avgLayer = new LayerOneMode(attrName + "_sp_avg", EdgeDirectionality.Directed, EdgeType.Valued, true);
@@ -163,183 +203,20 @@ namespace Threadle.Core.Analysis
         }
 
 
-        public static OperationResult<StructureResult> RandomWalkNodeAttributeDistances(Network network, string attrName, int maxSteps, string[]? layers, float walkfactor = 1.0f, bool balanced = false, bool weighted = false, bool backtrack = false, bool savesteps = false)
+
+        public static (OperationResult<StructureResult> Result, List<(string From, string To, int Step, long Count)>? Histograms) RandomWalkNodeAttributeFirstPassageTimeDistances(Network network, string attrName, int maxSteps, string[]? layers, float walkfactor, int minPairObs, bool balanced, bool weighted, bool returnHistograms = false, float[]? layerWeights = null)
         {
             if (CheckLayersExist(network, layers) is OperationResult result)
-                return OperationResult<StructureResult>.Fail(result);
-
-            if (walkfactor <= 0)
-                return OperationResult<StructureResult>.Fail("InvalidParameter", $"The 'walkfactor' parameter must be greater than zero.");
-            if (maxSteps <= 0)
-                return OperationResult<StructureResult>.Fail("InvalidParameter", $"The 'maxSteps' parameter must be greater than zero.");
-
-            Nodeset nodeset = network.Nodeset;
-
-            var categoryResult = BuildCategoryNodeset(network, attrName);
-            if (!categoryResult.Success)
-                return OperationResult<StructureResult>.Fail(categoryResult.Code, categoryResult.Message);
-            CategoryNodeset cat = categoryResult.Value;
-            Nodeset nodesetResults = cat.Nodeset;
-            Dictionary<string, uint> nodeAttributeStringToNodeId = cat.LabelToNodeId;
-            string[] labels = cat.Labels;
-            NodeAttributeType attrType = cat.AttrType;
-            byte attrIndex = cat.AttrIndex;
-
-            Network networkResults = new Network(attrName + "_rwdistances_results", nodesetResults);
-
-            int nbrNodesPerStepLevel = (int)(nodeset.Count * walkfactor);
-
-            // Resolve layers once for all walk steps
-            List<ILayer> resolvedLayers = [];
-            if (layers == null)
-                resolvedLayers.AddRange(network.Layers.Values);
-            else
-                foreach (string ln in layers)
-                    resolvedLayers.Add(network.GetLayer(ln).Value!);
-
-            // For each step length s, run walks picking alters from all specified layers simultaneously
-            for (int s = 1; s <= maxSteps; s++)
+                return (OperationResult<StructureResult>.Fail(result), []);
+            if (layerWeights != null)
             {
-                Dictionary<(uint, uint), int> resultsDict = [];
-
-                for (int i = 0; i < nbrNodesPerStepLevel; i++)
-                {
-                    uint nodeIndex = (uint)Math.Floor(i / walkfactor);
-                    if (!(nodeset.GetNodeIdByIndex(nodeIndex) is uint egoNodeId))
-                        continue;
-
-                    string startNodeAttrString = nodeset.GetNodeAttribute(egoNodeId, attrIndex) is NodeAttributeValue navStart
-                        ? (attrType == NodeAttributeType.String
-                            ? nodeset.GetStringFromPool((int)navStart.GetValue(attrType)!)
-                            : navStart.ToString(attrType))
-                        : "(missing)";
-
-                    bool abort = false;
-                    uint currentNodeId = egoNodeId;
-                    uint? previousNodeId = null;
-
-                    for (int j = 0; j < s; j++)
-                    {
-                        // Pick a random alter across all specified layers (null = all layers)
-                        var randomAlterResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted);
-                        if (!randomAlterResult.Success)
-                        {
-                            abort = true;
-                            break;
-                        }
-
-                        uint candidateId = randomAlterResult.Value;
-
-                        // Enforce no backtrack: try once more to avoid stepping back to the previous node
-                        if (!backtrack && previousNodeId.HasValue && candidateId == previousNodeId.Value)
-                        {
-                            var retryResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted);
-                            if (retryResult.Success && retryResult.Value != previousNodeId.Value)
-                                candidateId = retryResult.Value;
-                            // else: accept the backtrack rather than aborting
-                        }
-
-                        previousNodeId = currentNodeId;
-                        currentNodeId = candidateId;
-                    }
-
-                    if (abort)
-                        continue;
-
-                    string endNodeAttrString = nodeset.GetNodeAttribute(currentNodeId, attrIndex) is NodeAttributeValue navEnd
-                        ? (attrType == NodeAttributeType.String
-                            ? nodeset.GetStringFromPool((int)navEnd.GetValue(attrType)!)
-                            : navEnd.ToString(attrType))
-                        : "(missing)";
-
-                    if (!nodeAttributeStringToNodeId.TryGetValue(startNodeAttrString, out uint nodeIdFrom) ||
-                        !nodeAttributeStringToNodeId.TryGetValue(endNodeAttrString, out uint nodeIdTo))
-                        continue;
-
-                    if (resultsDict.TryGetValue((nodeIdFrom, nodeIdTo), out int existingCount))
-                        resultsDict[(nodeIdFrom, nodeIdTo)] = existingCount + 1;
-                    else
-                        resultsDict[(nodeIdFrom, nodeIdTo)] = 1;
-                }
-
-                LayerOneMode resultLayer = new LayerOneMode(attrName + "_steps_" + s, EdgeDirectionality.Directed, EdgeType.Valued, true);
-                foreach (var kvp in resultsDict)
-                    resultLayer.AddEdge(kvp.Key.Item1, kvp.Key.Item2, kvp.Value);
-                networkResults.Layers.Add(resultLayer.Name, resultLayer);
+                if (layers == null)
+                    return (OperationResult<StructureResult>.Fail("InvalidArguments", "'layerweights' requires 'layers' to be given explicitly, so each weight can be matched to a specific layer."), []);
+                if (layerWeights.Length != layers.Length)
+                    return (OperationResult<StructureResult>.Fail("LengthMismatch", $"The number of layer weights ({layerWeights.Length}) differs from the number of layers ({layers.Length})."), []);
+                if (layerWeights.Any(w => w <= 0))
+                    return (OperationResult<StructureResult>.Fail("InvalidArguments", "All layer weights must be positive."), []);
             }
-
-            // Compute average distance layer: avgDistance(A→B) = Σ(s × count[A,B,s]) / Σ(count[A,B,s])
-            Dictionary<(uint from, uint to), (float weightedSum, float totalCount)> avgDict = [];
-            for (int s = 1; s <= maxSteps; s++)
-            {
-                if (!networkResults.Layers.TryGetValue(attrName + "_steps_" + s, out ILayer? stepLayer))
-                    continue;
-                foreach (var (egoId, alters, values) in ((ILayerOneMode)stepLayer).GetAllEgoData())
-                {
-                    ReadOnlySpan<uint> alterSpan = alters.Span;
-                    ReadOnlySpan<float> valSpan = values.Span;
-                    for (int k = 0; k < alterSpan.Length; k++)
-                    {
-                        var key = (egoId, alterSpan[k]);
-                        float count = valSpan.IsEmpty ? 1f : valSpan[k];
-                        if (avgDict.TryGetValue(key, out var existing))
-                            avgDict[key] = (existing.weightedSum + s * count, existing.totalCount + count);
-                        else
-                            avgDict[key] = (s * count, count);
-                    }
-                }
-            }
-
-            LayerOneMode avgLayer = new LayerOneMode(attrName + "_avgdistance", EdgeDirectionality.Directed, EdgeType.Valued, true);
-            foreach (var kvp in avgDict)
-                avgLayer.AddEdge(kvp.Key.from, kvp.Key.to, kvp.Value.weightedSum / kvp.Value.totalCount);
-            networkResults.Layers.Add(avgLayer.Name, avgLayer);
-
-            // Compute standard deviation distance layer using the step layers and avgdistance
-            Dictionary<(uint from, uint to), (float weightedSumSq, float totalCount)> stdevDict = [];
-            for (int s = 1; s <= maxSteps; s++)
-            {
-                if (!networkResults.Layers.TryGetValue(attrName + "_steps_" + s, out ILayer? stepLayer))
-                    continue;
-                foreach (var (egoId, alters, values) in ((ILayerOneMode)stepLayer).GetAllEgoData())
-                {
-                    ReadOnlySpan<uint> alterSpan = alters.Span;
-                    ReadOnlySpan<float> valSpan = values.Span;
-                    for (int k = 0; k < alterSpan.Length; k++)
-                    {
-                        var key = (egoId, alterSpan[k]);
-                        float count = valSpan.IsEmpty ? 1f : valSpan[k];
-                        float avg = avgLayer.GetEdgeValue(key.Item1, key.Item2);
-                        float diff = s - avg;
-                        if (stdevDict.TryGetValue(key, out var existing))
-                            stdevDict[key] = (existing.weightedSumSq + diff * diff * count, existing.totalCount + count);
-                        else
-                            stdevDict[key] = (diff * diff * count, count);
-                    }
-                }
-            }
-
-            LayerOneMode stdevLayer = new LayerOneMode(attrName + "_stdevdistance", EdgeDirectionality.Directed, EdgeType.Valued, true);
-            foreach (var kvp in stdevDict)
-                stdevLayer.AddEdge(kvp.Key.from, kvp.Key.to,
-                    kvp.Value.totalCount > 1
-                    ? (float)Math.Sqrt(kvp.Value.weightedSumSq / (kvp.Value.totalCount - 1))
-                    : 0f);
-            networkResults.Layers.Add(stdevLayer.Name, stdevLayer);
-
-            // Remove step layers if savesteps=false
-            if (!savesteps)
-                for (int s = 1; s <= maxSteps; s++)
-                    networkResults.Layers.Remove(attrName + "_steps_" + s);
-
-            StructureResult results = new StructureResult(networkResults, new Dictionary<string, IStructure> { { "nodeset", nodesetResults } });
-            return OperationResult<StructureResult>.Ok(results, $"Random walk distances computed. {labels.Length} unique attribute values, {maxSteps} step levels.");
-        }
-
-        public static (OperationResult<StructureResult> Result, List<(string From, string To, int Step, int Count)>? Histograms) RandomWalkNodeAttributeFirstPassageTimeDistances(Network network, string attrName, int maxSteps, string[]? layers, float walkfactor, int minPairObs, bool balanced, bool weighted, bool returnHistograms = false)
-        {
-            if (CheckLayersExist(network, layers) is OperationResult result)
-                return (OperationResult<StructureResult>.Fail(result),[]);
 
             if (walkfactor <= 0)
                 return (OperationResult<StructureResult>.Fail("InvalidParameter", $"The 'walkfactor' parameter must be greater than zero."), []);
@@ -364,7 +241,7 @@ namespace Threadle.Core.Analysis
                     : nav.ToString(attrType))
                 : "(missing)";
 
-            Dictionary<(uint from, uint to), int[]> fptHistograms = [];
+            Dictionary<(uint from, uint to), long[]> fptHistograms = [];
             Dictionary<uint, int> sourceWalkCount = [];
 
             // Resolve layers once — captured by RunWalk closure, avoids per-step List<ILayer> allocation
@@ -375,19 +252,16 @@ namespace Threadle.Core.Analysis
                 foreach (string ln in layers)
                     resolvedLayers.Add(network.GetLayer(ln).Value!);
 
-            void RunWalk(uint startNodeId)
+            void RunWalk(uint startNodeId, Dictionary<(uint from, uint to), long[]> histograms, Dictionary<uint, int> walkCounts)
             {
                 if (!nodeAttributeStringToNodeId.TryGetValue(GetCategoryString(startNodeId), out uint sourceCatId))
                     return;
-                if (sourceWalkCount.TryGetValue(sourceCatId, out int existingSWC))
-                    sourceWalkCount[sourceCatId] = existingSWC + 1;
-                else
-                    sourceWalkCount[sourceCatId] = 1;
+                walkCounts[sourceCatId] = walkCounts.TryGetValue(sourceCatId, out int existingSWC) ? existingSWC + 1 : 1;
                 HashSet<uint> seen = [];
                 uint currentNodeId = startNodeId;
                 for (int step = 1; step <= maxSteps; step++)
                 {
-                    var randomAlterResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted);
+                    var randomAlterResult = Analyses.GetRandomAlter(currentNodeId, resolvedLayers, EdgeTraversal.Out, balanced, weighted, layerWeights);
                     if (!randomAlterResult.Success) break;
                     currentNodeId = randomAlterResult.Value;
                     if (currentNodeId == startNodeId || !nodeAttributeStringToNodeId.TryGetValue(GetCategoryString(currentNodeId), out uint currentCatId))
@@ -395,8 +269,8 @@ namespace Threadle.Core.Analysis
                     if (seen.Add(currentCatId))
                     {
                         var key = (sourceCatId, currentCatId);
-                        if (!fptHistograms.TryGetValue(key, out int[]? hist))
-                            fptHistograms[key] = hist = new int[maxSteps];
+                        if (!histograms.TryGetValue(key, out long[]? hist))
+                            histograms[key] = hist = new long[maxSteps];
                         hist[step - 1]++;
                     }
                     if (seen.Count == labels.Length)
@@ -404,50 +278,44 @@ namespace Threadle.Core.Analysis
                 }
             }
 
-            //void RunWalk(uint startNodeId)
-            //{
-            //    if (!nodeAttributeStringToNodeId.TryGetValue(GetCategoryString(startNodeId), out uint sourceCatId))
-            //        return; // node's category not in the map, skip this walk
-            //    if (sourceWalkCount.TryGetValue(sourceCatId, out int existingSWC))
-            //        sourceWalkCount[sourceCatId] = existingSWC + 1;
-            //    else
-            //        sourceWalkCount[sourceCatId] = 1;
-            //    HashSet<uint> seen = [];
-            //    uint currentNodeId = startNodeId;
-            //    for (int step=1; step<=maxSteps;step++)
-            //    {
-            //        var alterResult = Analyses.GetRandomAlter(network, currentNodeId, layers, EdgeTraversal.Out, balanced, weighted);
-            //        if (!alterResult.Success)
-            //            break;
-
-            //        currentNodeId = alterResult.Value;
-            //        // If the current node is back at the start node, skip recording but keep walking
-            //        // same if arrived at a node whose category value is not mapped: skip recording, keep on walking
-            //        if (currentNodeId==startNodeId || !nodeAttributeStringToNodeId.TryGetValue(GetCategoryString(currentNodeId), out uint currentCatId))
-            //            continue;
-            //        if (seen.Add(currentCatId))
-            //        {
-            //            var key = (sourceCatId, currentCatId);
-            //            if (!fptHistograms.TryGetValue(key, out int[]? hist))
-            //                fptHistograms[key] = hist = new int[maxSteps];
-            //            hist[step - 1]++;
-            //        }
-            //        if (seen.Count == labels.Length)
-            //            break;
-            //    }
-            //}
-
-            // Initial pass
+            // Initial pass: walks are independent of each other, so this runs in parallel (up to the
+            // 'maxthreads' setting) with each task accumulating into its own local histograms/walkCounts,
+            // merged into the shared dictionaries once the task's share of walks is done. Because Misc.Random
+            // is thread-static rather than seeded per worker thread, exact reproducibility via randomseed()
+            // is only guaranteed when maxthreads is set to 1.
             uint[] allNodeIds = nodeset.NodeIdArray;
             int nbrWalks = (int)(allNodeIds.Length * walkfactor);
-            for (int i=0; i<nbrWalks;i++)
-            {
-                uint nodeIndex = (uint)Math.Floor(i / walkfactor);
-                if (nodeIndex < allNodeIds.Length)
-                    RunWalk(allNodeIds[nodeIndex]);
-            }
+            object mergeLock = new();
 
-            // Targeted restarts for undersampled category-pairs
+            Parallel.For(0, nbrWalks, UserSettings.GetParallelOptions(),
+                localInit: () => (Histograms: new Dictionary<(uint, uint), long[]>(), WalkCounts: new Dictionary<uint, int>()),
+                body: (i, loopState, local) =>
+                {
+                    uint nodeIndex = (uint)Math.Floor(i / walkfactor);
+                    if (nodeIndex < allNodeIds.Length)
+                        RunWalk(allNodeIds[nodeIndex], local.Histograms, local.WalkCounts);
+                    return local;
+                },
+                localFinally: local =>
+                {
+                    lock (mergeLock)
+                    {
+                        foreach (var (key, hist) in local.Histograms)
+                        {
+                            if (!fptHistograms.TryGetValue(key, out long[]? existingHist))
+                                fptHistograms[key] = hist;
+                            else
+                                for (int s = 0; s < hist.Length; s++)
+                                    existingHist[s] += hist[s];
+                        }
+                        foreach (var (catId, count) in local.WalkCounts)
+                            sourceWalkCount[catId] = sourceWalkCount.TryGetValue(catId, out int existing) ? existing + count : count;
+                    }
+                });
+
+            // Targeted restarts for undersampled category-pairs. Kept sequential: each attempt's
+            // "are we done yet" check depends on the accumulated results of previous attempts for the
+            // same source category, so this isn't embarrassingly parallel the way the initial pass is.
             if (minPairObs > 0)
             {
                 Dictionary<uint, List<uint>> categoryToNodes = [];
@@ -462,14 +330,13 @@ namespace Threadle.Core.Analysis
 
                 foreach (var (sourceCatId, sourceNodes) in categoryToNodes)
                 {
-                    int nodeIdx = 0;
                     int maxAttempts = minPairObs * labels.Length * 3;
                     for (int attempt = 0; attempt < maxAttempts; attempt++)
                     {
                         bool allSatisfied = true;
                         for (uint t = 0; t < (uint)labels.Length; t++)
                         {
-                            if (!fptHistograms.TryGetValue((sourceCatId, t), out int[]? obs) || obs.Sum() < minPairObs)
+                            if (!fptHistograms.TryGetValue((sourceCatId, t), out long[]? obs) || obs.Sum() < minPairObs)
                             {
                                 allSatisfied = false;
                                 break;
@@ -477,8 +344,7 @@ namespace Threadle.Core.Analysis
                         }
                         if (allSatisfied)
                             break;
-                        RunWalk(sourceNodes[nodeIdx % sourceNodes.Count]);
-                        nodeIdx++;
+                        RunWalk(sourceNodes[Misc.Random.Next(sourceNodes.Count)], fptHistograms, sourceWalkCount);
                     }
                 }
             }
@@ -495,10 +361,10 @@ namespace Threadle.Core.Analysis
 
             foreach (var kvp in fptHistograms)
             {
-                int[] hist = kvp.Value;
+                long[] hist = kvp.Value;
 
                 // Derive sum, sumSq, count from histogram
-                int count = 0;
+                long count = 0;
                 double sum = 0, sumSq = 0;
                 for (int s = 0; s < hist.Length; s++)
                 {
@@ -537,10 +403,10 @@ namespace Threadle.Core.Analysis
             networkResults.Layers.Add(countLayer.Name, countLayer);
             networkResults.Layers.Add(coverageLayer.Name, coverageLayer);
 
-            List<(string From, string To, int Step, int Count)>? histList = null;
+            List<(string From, string To, int Step, long Count)>? histList = null;
             if (returnHistograms)
             {
-                histList = new List<(string From, string To, int Step, int Count)>();
+                histList = new List<(string From, string To, int Step, long Count)>();
                 foreach (var kvp in fptHistograms)
                 {
                     string fromLabel = labels[kvp.Key.from];
@@ -552,7 +418,7 @@ namespace Threadle.Core.Analysis
             }
 
             StructureResult results = new StructureResult(networkResults, new Dictionary<string, IStructure> { { "nodeset", nodesetResults } });
-            int totalObs = fptHistograms.Values.Sum(h => h.Sum());
+            long totalObs = fptHistograms.Values.Sum(h => h.Sum());
             return (OperationResult<StructureResult>.Ok(results, $"Random walk FPT distances computed. {labels.Length} unique attribute values, {totalObs} total observations."), histList);
         }
 
@@ -560,12 +426,12 @@ namespace Threadle.Core.Analysis
         /// Returns the pth percentile from a fixed-size histogram (array) where bin i
         /// represents value i+1
         /// </summary>
-        private static float PercentileFromHistogram(int[] hist, int count, float p)
+        private static float PercentileFromHistogram(long[] hist, long count, float p)
         {
-            int lowerPos = (int)Math.Ceiling(p * count);
-            int upperPos = (int)Math.Floor(p * count) + 1;
+            long lowerPos = (long)Math.Ceiling(p * count);
+            long upperPos = (long)Math.Floor(p * count) + 1;
             float lowerVal = 0f, upperVal = 0f;
-            int cumulative = 0;
+            long cumulative = 0;
             for (int s = 0; s < hist.Length; s++)
             {
                 cumulative += hist[s];

@@ -158,6 +158,20 @@ namespace Threadle.Core.Utilities
                         }
                         writer.WriteLine(sb.ToString());
                     }
+
+                    // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+                    if (layerOneMode.IsSymmetric && layerOneMode.Selfties)
+                        foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                            if (layerOneMode.CheckEdgeExists(nodeId, nodeId))
+                            {
+                                sb.Clear();
+                                sb.Append(nodeId);
+                                if (isValued)
+                                    sb.Append($"\t{nodeId};{layerOneMode.GetEdgeValue(nodeId, nodeId).ToString(CultureInfo.InvariantCulture)}");
+                                else
+                                    sb.Append($"\t{nodeId}");
+                                writer.WriteLine(sb.ToString());
+                            }
                 }
                 else if (layer is ILayerTwoMode layerTwoMode)
                 {
@@ -204,6 +218,11 @@ namespace Threadle.Core.Utilities
                         new LayerTwoMode { Name = pendingName };
                 if (currentLayer!=null)
                 {
+                    // _addHyperedge() (used below while parsing) trusts the file's node list as
+                    // given, so a duplicate node id on one row needs cleaning up before the layer
+                    // is packed/stored.
+                    if (currentLayer is LayerTwoMode layerTwoModeToFlush)
+                        layerTwoModeToFlush._deduplicateHyperedges();
                     collectedLayers.Add(currentLayer.Name, compactLayers ? Misc.PackLayer(currentLayer) : currentLayer);
                     currentLayer = null;
                 }
@@ -318,7 +337,17 @@ namespace Threadle.Core.Utilities
                         continue;
                     string hyperName = parts[0];
                     if (parts.Length > 1)
-                        layerTwoMode._addHyperedge(hyperName, Misc.SplitStringToUintArray(parts[1], '\t'));
+                    {
+                        // Parse tokens individually so one bad token doesn't discard every valid
+                        // node id on the line - Misc.SplitStringToUintArray is all-or-nothing and
+                        // would otherwise silently drop the whole row's membership.
+                        string[] tokens = parts[1].Split('\t');
+                        var nodeIds = new List<uint>(tokens.Length);
+                        foreach (string token in tokens)
+                            if (uint.TryParse(token.Trim(), out uint nodeId))
+                                nodeIds.Add(nodeId);
+                        layerTwoMode._addHyperedge(hyperName, nodeIds.Count > 0 ? nodeIds.ToArray() : null);
+                    }
                     else
                         layerTwoMode._addHyperedge(hyperName);
                 }
@@ -406,7 +435,11 @@ namespace Threadle.Core.Utilities
                 if (!uint.TryParse(parts[0], out uint nodeId))
                     continue;
                 nodeset.AddNode(nodeId);
-                for (int i = 1; i < parts.Length && i <= nbrCols; i++)
+                // attributeNames has nbrCols-1 entries (indices 0..nbrCols-2, for header
+                // columns 1..nbrCols-1); a data row with more columns than the header - e.g.
+                // a stray extra tab - must stop at nbrCols-1 rather than nbrCols, or
+                // attributeNames[i-1] indexes past its end.
+                for (int i = 1; i < parts.Length && i < nbrCols; i++)
                 {
                     var val = parts[i];
                     if (string.IsNullOrEmpty(val)) continue;

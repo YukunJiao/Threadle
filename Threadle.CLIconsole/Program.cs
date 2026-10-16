@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using Threadle.CLIconsole.Runtime;
+using Threadle.Core.Utilities;
 
 namespace Threadle.CLIconsole
 {
@@ -32,6 +33,9 @@ namespace Threadle.CLIconsole
                         break;
                 }
             }
+            // Optional configuration file next to the executable; warnings go to STDERR so that JSON output stays clean.
+            foreach (string warning in AppConfig.Load())
+                ConsoleOutput.WriteError($"!Warning: {warning}");
             CommandLoop.Run(json);
         }
     }

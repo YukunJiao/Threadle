@@ -1,15 +1,841 @@
-﻿using Threadle.Core.Model;
+﻿using System.Globalization;
+using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
+using Threadle.Core.Processing;
 using Threadle.Core.Utilities;
 
 namespace Threadle.Core.Analysis
 {
+    public record ShortestPathResult(int Distance, uint[]? Path);
+
     /// <summary>
     /// A collection of public-facing (and fairly simple) network analysis functions accessible by the frontend.
     /// </summary>
     public static class Analyses
     {
         #region Methods (public)
+
+        /// <summary>
+        /// Detects communities via Leiden (Traag, Waltman &amp; van Eck 2019) for the specified 1-mode
+        /// layer(s), storing the community index as an integer node attribute. Like
+        /// CommunityDetectionLouvain, this alternates local-moving and aggregation, but inserts a
+        /// randomized refinement step before each aggregation that guarantees every resulting
+        /// community is internally connected — a node is only ever merged into a sub-community it
+        /// shares a direct edge with, fixing a known Louvain flaw where aggregation can occasionally
+        /// strand a node in a community it has no real path through. randomness (default 0.01, θ in
+        /// the original paper) controls how much refinement's merge choices deviate from picking the
+        /// single best candidate — values near 0 are effectively greedy, larger values explore more
+        /// and can escape local optima that a purely greedy method gets stuck in across repeated
+        /// runs. resolution behaves as in CommunityDetectionLouvain (this uses the same
+        /// resolution-scaled modularity objective, not the CPM objective from the original paper, so
+        /// results are directly comparable to Louvain's). Directed layers are symmetrized and
+        /// multiple layers combine via summed edge weight, matching CommunityDetectionLouvain; only
+        /// 1-mode layers are accepted — project 2-mode layers first. Returns a summary with
+        /// NbrCommunities, CommunitySizes (descending), the achieved Modularity score Q, and
+        /// NumRestarts. When numRestarts &gt; 1, runs that many independent restarts in parallel
+        /// across up to 'maxthreads' threads (see 'setting()') and keeps the highest-modularity
+        /// result — a way to escape local optima that a single run can get stuck in. Exact
+        /// reproducibility via randomseed() across restarts is only guaranteed when maxthreads is
+        /// set to 1.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionLeiden(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0, double randomness = 0.01, int numRestarts = 1)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.LeidenCommunities(nodeIds, oneModes, resolution, randomness, numRestarts);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts);
+        }
+
+        /// <summary>
+        /// Detects communities via Louvain modularity optimization (Blondel et al. 2008) for the
+        /// specified 1-mode layer(s), storing the community index as an integer node attribute.
+        /// Directed layers are symmetrized (arcs in both directions accumulate into an undirected
+        /// weight) since modularity optimization is inherently undirected — the same convention
+        /// used by Constraint/EffectiveSize. Multiple layers combine via summed edge weight; only
+        /// 1-mode layers are accepted — project 2-mode layers first.
+        /// resolution (default 1.0 = standard modularity) scales the null-model term: values above
+        /// 1 favor more, smaller communities; values below 1 favor fewer, larger ones (Reichardt &amp;
+        /// Bornholdt 2006). Returns a summary with NbrCommunities, CommunitySizes (descending), the
+        /// achieved Modularity score Q, and NumRestarts. When numRestarts &gt; 1, runs that many
+        /// independent restarts in parallel across up to 'maxthreads' threads (see 'setting()') and
+        /// keeps the highest-modularity result — a way to escape local optima that a single run can
+        /// get stuck in. Exact reproducibility via randomseed() across restarts is only guaranteed
+        /// when maxthreads is set to 1.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionLouvain(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0, int numRestarts = 1)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.LouvainCommunities(nodeIds, oneModes, resolution, numRestarts);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts);
+        }
+
+        /// <summary>
+        /// Detects communities via asynchronous label propagation (Raghavan, Albert &amp; Kumara 2007)
+        /// for the specified 1-mode layer(s), storing the community index as an integer node
+        /// attribute. Unlike Louvain, this does not optimize modularity — each node repeatedly
+        /// adopts the most common label among its current neighbors until labels stop changing or
+        /// maxIterations passes are reached (a cap is required since, unlike Louvain's local-moving
+        /// phase, label propagation has no guarantee of convergence). Directed layers are
+        /// symmetrized and multiple layers combine via summed edge weight, matching
+        /// CommunityDetectionLouvain; only 1-mode layers are accepted — project 2-mode layers first.
+        /// Returns a summary with NbrCommunities, CommunitySizes (descending), the achieved
+        /// Modularity score Q of the resulting partition (reported for comparability with other
+        /// methods, not something this method optimizes for), and NumRestarts. When numRestarts &gt; 1,
+        /// runs that many independent restarts in parallel across up to 'maxthreads' threads (see
+        /// 'setting()') and keeps the one with the highest modularity — a secondary selection
+        /// criterion here, since LPA itself doesn't target modularity. Exact reproducibility via
+        /// randomseed() across restarts is only guaranteed when maxthreads is set to 1.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionLabelPropagation(Network network, string[]? layerNames, string? attrName = null, int maxIterations = 100, int numRestarts = 1)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.LabelPropagationCommunities(nodeIds, oneModes, maxIterations, numRestarts);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts);
+        }
+
+        /// <summary>
+        /// Detects communities via LPAm (Barber &amp; Clark 2009) for the specified 1-mode layer(s),
+        /// storing the community index as an integer node attribute. Like CommunityDetectionLabelPropagation,
+        /// every node starts with a unique label and repeatedly adopts a label from among its
+        /// neighbors — but here each move is only accepted if it actually increases modularity,
+        /// rather than simply following the majority. This fixes vanilla label propagation's
+        /// tendency to collapse a well-connected network into one "monster community": a move that
+        /// would merge everything together has negative modularity gain once the resulting
+        /// community's internal density stops exceeding the null model, so it is never taken. Unlike
+        /// CommunityDetectionLouvain, LPAm runs a single level with no aggregation step afterwards,
+        /// so it typically finds more, smaller communities than Louvain since it cannot escape local
+        /// optima the same way. Directed layers are symmetrized and multiple layers combine via
+        /// summed edge weight, matching CommunityDetectionLouvain; only 1-mode layers are accepted —
+        /// project 2-mode layers first. Returns a summary with NbrCommunities, CommunitySizes
+        /// (descending), the achieved Modularity score Q, and NumRestarts. When numRestarts &gt; 1,
+        /// runs that many independent restarts in parallel across up to 'maxthreads' threads (see
+        /// 'setting()') and keeps the highest-modularity result. Exact reproducibility via
+        /// randomseed() across restarts is only guaranteed when maxthreads is set to 1.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionLPAm(Network network, string[]? layerNames, string? attrName = null, int numRestarts = 1)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.LPAmCommunities(nodeIds, oneModes, numRestarts);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts);
+        }
+
+        /// <summary>
+        /// Detects communities via Girvan-Newman (2002) for the specified 1-mode layer(s), storing
+        /// the community index as an integer node attribute. Unlike CommunityDetectionLouvain/
+        /// Leiden/LabelPropagation/LPAm, which build communities up from singletons (agglomerative),
+        /// this tears the network down one edge at a time (divisive): repeatedly finds the edge with
+        /// the highest edge betweenness among the currently-remaining edges, removes it, and scores
+        /// the resulting connected-component partition by modularity against the *original*,
+        /// un-cut graph. The partition with the highest modularity seen across every removal step is
+        /// returned. Directed layers are symmetrized and multiple layers combine via summed edge
+        /// weight, matching every other community detection method; only 1-mode layers are accepted
+        /// — project 2-mode layers first. Because a full edge-betweenness recomputation is needed
+        /// after every single edge removal, this is substantially more expensive than the
+        /// agglomerative methods — O(V·E²) in the worst case — so it is best suited to smaller
+        /// networks; the per-removal betweenness pass itself runs in parallel across up to
+        /// 'maxthreads' threads (see 'setting()'). Deterministic given the graph (ties for highest
+        /// betweenness are broken by lowest node-index pair), so unlike the other methods this has no
+        /// numRestarts. Returns NbrCommunities, CommunitySizes (descending), and the achieved
+        /// Modularity score. Reference: Girvan &amp; Newman (2002) doi:10.1073/pnas.122653799.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> CommunityDetectionGirvanNewman(Network network, string[]? layerNames, string? attrName = null, double resolution = 1.0)
+        {
+            if (!TryResolveOneModeLayersForCommunityDetection(network, layerNames, out var oneModes, out var err))
+                return err!;
+
+            attrName = ResolveCommunityAttrName(layerNames, attrName);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (communities, modularity) = CommunityFunctions.GirvanNewmanCommunities(nodeIds, oneModes, resolution);
+            return StoreCommunityResult(network, attrName, communities, modularity, numRestarts: 1);
+        }
+
+        /// <summary>
+        /// Computes the Holland-Leinhardt triadic census for a single 1-mode layer: counts of the
+        /// 16 isomorphism classes of directed triads (003, 012, 102, 021D, 021U, 021C, 111D, 111U,
+        /// 030T, 030C, 201, 120D, 120U, 120C, 210, 300), plus the total number of triples and a
+        /// "Method" field ("Exact" or "Sampled"). For symmetric layers every present dyad is mutual,
+        /// so only 003/102/201/300 can be non-zero.
+        /// When sampleSize is 0 (default), computes the exact census — cost scales with the sum of
+        /// squared node degrees, not network size, so this can still be expensive for networks with
+        /// high-degree hubs; both passes run in parallel across up to 'maxthreads' threads (see
+        /// 'setting()'). When sampleSize > 0, instead classifies that many uniformly-random
+        /// node triples and extrapolates: the result additionally carries "SampleSize" and, per
+        /// triad type, a "StandardErrors", "ConfidenceIntervalLower" and "ConfidenceIntervalUpper"
+        /// entry (95% Wilson score interval on the estimated count — chosen over the naive Wald
+        /// interval because it stays non-degenerate when a type is observed zero times in the
+        /// sample, which is routine for rare types). Because empty (003) triads dominate real
+        /// sparse networks, rare types will still have wide intervals unless the sample is large.
+        /// Reference: Holland &amp; Leinhardt (1970) doi:10.1086/224727; Batagelj &amp; Mrvar (2001).
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> TriadicCensus(Network network, string layerName, int sampleSize = 0)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<Dictionary<string, object>>.Fail("NodesMissing", "Network has no nodes.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            var result = sampleSize > 0
+                ? NetworkLevelFunctions.TriadicCensusSampled(network.Nodeset.NodeIdArray, lr.Value!, sampleSize)
+                : NetworkLevelFunctions.TriadicCensus(network.Nodeset.NodeIdArray, lr.Value!);
+            return OperationResult<Dictionary<string, object>>.Ok(result);
+        }
+
+        /// <summary>
+        /// Calculates each node's eccentricity (the length of the longest shortest path to any
+        /// node reachable from it) in the specified 1-mode layer, storing the result as an int
+        /// node attribute. Unlike Diameter, this is computed for every node individually — not
+        /// restricted to the largest weakly connected component — so a node in a smaller component
+        /// gets its own component's eccentricity, and an isolated node gets 0. For directed
+        /// layers, 'traversal' controls which direction BFS follows. The per-node BFS passes run
+        /// in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult Eccentricity(Network network, string layerName, string? attrName = null, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult.Fail(lr.Code, lr.Message);
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var ecc = NetworkLevelFunctions.Eccentricity(nodeIds, lr.Value!, traversal);
+            attrName = string.IsNullOrEmpty(attrName) ? "eccentricity" : attrName;
+            var attrDict = ecc.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Int);
+        }
+
+        /// <summary>
+        /// Network diameter and average path length for a single 1-mode layer, restricted to the
+        /// largest weakly connected component (ComponentSize vs TotalNodes are both reported for
+        /// transparency) — the convention used by igraph/NetworkX, since both statistics are only
+        /// meaningful within a connected set of nodes. When sampleSize is 0 (default), computes
+        /// both exactly via a full BFS from every node in the giant component, run in parallel
+        /// across up to 'maxthreads' threads (see 'setting()'); the result carries Diameter,
+        /// AvgDistance, PairsConsidered and Method = "Exact". When sampleSize &gt; 0, AvgDistance is
+        /// instead estimated from that many random sources in the giant component, each source's
+        /// own mean distance to its reachable nodes treated as one independent observation — the
+        /// result carries a StandardError and 95% confidence interval (normal approximation of a
+        /// mean) for AvgDistance. Diameter cannot be estimated the same way — sampling a mean
+        /// estimator never reliably sees the long tail that defines a maximum — so the sampled
+        /// result instead reports a DiameterLowerBound from 'numSweeps' parallel double-sweep
+        /// trials (pick a random node, BFS to its farthest node u, BFS again from u — the largest
+        /// distance seen across trials is a lower bound on the true diameter, often exact in
+        /// practice but not guaranteed, especially for directed layers): a lower bound, not a
+        /// confidence interval, since it is an extreme-value statistic rather than a mean. For
+        /// directed layers, 'traversal' controls which direction BFS follows; unreachable pairs
+        /// (possible even within the giant component when following direction) are simply
+        /// excluded from both statistics.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> Diameter(Network network, string layerName, int sampleSize = 0, int numSweeps = 4, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<Dictionary<string, object>>.Fail("NodesMissing", "Network has no nodes.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            var diameterResult = sampleSize > 0
+                ? NetworkLevelFunctions.DiameterSampled(network.Nodeset.NodeIdArray, lr.Value!, traversal, sampleSize, numSweeps)
+                : NetworkLevelFunctions.Diameter(network.Nodeset.NodeIdArray, lr.Value!, traversal);
+            return OperationResult<Dictionary<string, object>>.Ok(diameterResult);
+        }
+
+        /// <summary>
+        /// Small-world coefficient sigma (Humphries &amp; Gurney 2008) for a single 1-mode layer:
+        /// (C_observed / C_random) / (L_observed / L_random), where C is the average local
+        /// clustering coefficient and L is the average shortest-path length, and the "random"
+        /// reference is the mean of 'nullTrials' independent degree-preserving rewirings of the
+        /// layer (rewire()'s default 2-edge swap, discarded after measuring — never added to the
+        /// network). sigma &gt; 1 indicates small-world structure: markedly more clustered than a
+        /// comparable random graph, without a correspondingly longer average path length.
+        /// Clustering uses whichever formula clusteringcoefficient() would auto-select for the
+        /// layer's type; average path length is diameter()'s AvgDistance, restricted to the
+        /// largest weakly connected component in both the observed and each random-reference
+        /// network, for a like-for-like comparison. For directed layers, 'traversal' controls
+        /// which direction BFS follows for the path-length measurements (clustering has its own
+        /// direction-aware formula regardless). Reports only sigma, not Telesford et al. (2011)'s
+        /// omega, which additionally needs a ring-lattice reference Threadle does not currently
+        /// generate.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> SmallWorldCoefficient(Network network, string layerName, int nullTrials = 10, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (nullTrials < 1)
+                return OperationResult<Dictionary<string, object>>.Fail("InvalidArgument", "'nullTrials' must be at least 1.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            ILayerOneMode layer = lr.Value!;
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+
+            ClusteringMethod method = LocalStructureFunctions.DetectMethod([layer]);
+            double cObserved = AverageClustering(nodeIds, layer, method);
+            double lObserved = (double)NetworkLevelFunctions.Diameter(nodeIds, layer, traversal)["AvgDistance"];
+
+            double cRandSum = 0.0, lRandSum = 0.0;
+            for (int t = 0; t < nullTrials; t++)
+            {
+                LayerOneMode randomLayer = NetworkProcessor.BuildRewiredLayer(layer, nodeIds, layerName + "-nullmodel", 0, false, 0, out _, out _);
+                cRandSum += AverageClustering(nodeIds, randomLayer, method);
+                lRandSum += (double)NetworkLevelFunctions.Diameter(nodeIds, randomLayer, traversal)["AvgDistance"];
+            }
+            double cRandom = cRandSum / nullTrials;
+            double lRandom = lRandSum / nullTrials;
+
+            double sigma = (cRandom > 0 && lObserved > 0 && lRandom > 0)
+                ? (cObserved / cRandom) / (lObserved / lRandom)
+                : double.NaN;
+
+            return OperationResult<Dictionary<string, object>>.Ok(new Dictionary<string, object>
+            {
+                ["Sigma"] = sigma,
+                ["ObservedClustering"] = cObserved,
+                ["ObservedAvgDistance"] = lObserved,
+                ["RandomClustering"] = cRandom,
+                ["RandomAvgDistance"] = lRandom,
+                ["NullTrials"] = nullTrials
+            });
+        }
+
+        /// <summary>Average local clustering coefficient over all nodes (0.0 if there are none).</summary>
+        private static double AverageClustering(uint[] nodeIds, ILayerOneMode layer, ClusteringMethod method)
+        {
+            var values = LocalStructureFunctions.ClusteringCoefficient(nodeIds, [layer], method);
+            return values.Count > 0 ? values.Values.Average() : 0.0;
+        }
+
+        /// <summary>
+        /// Computes Burt's constraint for each node in the specified 1-mode layer(s) and stores
+        /// the result as a float node attribute. Constraint C(i) = Σ_j (p_ij + Σ_q p_iq p_qj)²
+        /// where p_ij is i's proportion of interaction with j. Ranges from ~0 (broker, many
+        /// structural holes) to ~1 (fully embedded in dense clique). Only 1-mode layers are
+        /// accepted — project 2-mode layers first. Burt's formula has no defined treatment of a
+        /// tie from a node to itself, so a layer where selfties are allowed is always refused,
+        /// even if it has none. The per-node O(k²) computation (shared with EffectiveSize) runs
+        /// in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// Reference: Burt (1992) Structural Holes; Burt (2004) doi:10.1086/421787.
+        /// </summary>
+        public static OperationResult Constraint(Network network, string[]? layerNames, string? attrName = null)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult.Fail("NodesMissing", "Network has no nodes.");
+
+            List<ILayerOneMode> oneModes = [];
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Constraint requires 1-mode layers — use projecttwomodetoonemode() first.");
+                    if (layer is ILayerOneMode lom)
+                    {
+                        if (lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Burt's constraint has no defined treatment of a tie from a node to itself, so it is refused for any layer where selfties are allowed — even if none are actually present.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success) return OperationResult.Fail(lr.Code, lr.Message);
+                    if (lr.Value is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Constraint requires 1-mode layers.");
+                    if (lr.Value is ILayerOneMode lom)
+                    {
+                        if (lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Burt's constraint has no defined treatment of a tie from a node to itself, so it is refused for any layer where selfties are allowed — even if none are actually present.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            if (oneModes.Count == 0)
+                return OperationResult.Fail("NoLayers", "No 1-mode layers found.");
+
+            string layerTag = layerNames?.Length == 1 ? layerNames[0] + "_" : (layerNames == null ? "" : "multilayer_");
+            attrName = !string.IsNullOrEmpty(attrName) ? attrName : layerTag + "constraint";
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (c, _) = LocalStructureFunctions.StructuralHoles(nodeIds, oneModes);
+            var attrDict = c.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Computes Burt's effective size for each node in the specified 1-mode layer(s) and stores
+        /// the result as a float node attribute. Effective size = k - Σ_j Σ_{q≠j} p_ij p_qj,
+        /// measuring the number of non-redundant contacts. Higher values indicate more structural
+        /// holes around the ego. Only 1-mode layers are accepted — project 2-mode layers first.
+        /// Burt's formula has no defined treatment of a tie from a node to itself, so a layer
+        /// where selfties are allowed is always refused, even if it has none. The per-node O(k²)
+        /// computation (shared with Constraint) runs in parallel across up to 'maxthreads'
+        /// threads (see 'setting()').
+        /// Reference: Burt (1992) Structural Holes; Burt (2004) doi:10.1086/421787.
+        /// </summary>
+        public static OperationResult EffectiveSize(Network network, string[]? layerNames, string? attrName = null)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult.Fail("NodesMissing", "Network has no nodes.");
+
+            List<ILayerOneMode> oneModes = [];
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Effective size requires 1-mode layers — use projecttwomodetoonemode() first.");
+                    if (layer is ILayerOneMode lom)
+                    {
+                        if (lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Burt's effective size has no defined treatment of a tie from a node to itself, so it is refused for any layer where selfties are allowed — even if none are actually present.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success) return OperationResult.Fail(lr.Code, lr.Message);
+                    if (lr.Value is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Effective size requires 1-mode layers.");
+                    if (lr.Value is ILayerOneMode lom)
+                    {
+                        if (lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Burt's effective size has no defined treatment of a tie from a node to itself, so it is refused for any layer where selfties are allowed — even if none are actually present.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            if (oneModes.Count == 0)
+                return OperationResult.Fail("NoLayers", "No 1-mode layers found.");
+
+            string layerTag = layerNames?.Length == 1 ? layerNames[0] + "_" : (layerNames == null ? "" : "multilayer_");
+            attrName = !string.IsNullOrEmpty(attrName) ? attrName : layerTag + "effectivesize";
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var (_, es) = LocalStructureFunctions.StructuralHoles(nodeIds, oneModes);
+            var attrDict = es.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Degree assortativity (Newman 2002): Pearson correlation between the degrees
+        /// of connected node pairs. For directed layers uses out-degree of source and
+        /// in-degree of target; for undirected uses degree of both endpoints.
+        /// Returns a value in [-1, 1]: positive = hubs connect to hubs,
+        /// negative = hubs connect to low-degree nodes.
+        /// </summary>
+        public static OperationResult<double> DegreeAssortativity(Network network, string layerName)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<double>.Fail("NodesMissing", "Network has no nodes.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<double>.Fail(lr.Code, lr.Message);
+            double r = NetworkLevelFunctions.DegreeAssortativity(network.Nodeset.NodeIdArray, lr.Value!);
+            return OperationResult<double>.Ok(r);
+        }
+
+        /// <summary>
+        /// Attribute assortativity (Newman 2003): tendency of connected nodes to share
+        /// the same value of a node attribute. For Float/Int attributes uses Pearson
+        /// correlation; for Char/String/Bool uses the nominal mixing formula.
+        /// Returns a value in [-1, 1]. Nodes with missing attribute values are skipped.
+        /// </summary>
+        public static OperationResult<double> Assortativity(Network network, string layerName, string attrName)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<double>.Fail("NodesMissing", "Network has no nodes.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<double>.Fail(lr.Code, lr.Message);
+
+            if (!network.Nodeset.NodeAttributeDefinitionManager.TryGetAttributeIndex(attrName, out byte attrIndex))
+                return OperationResult<double>.Fail("AttributeUnknown", $"Attribute '{attrName}' not found.");
+            if (!network.Nodeset.NodeAttributeDefinitionManager.TryGetAttributeType(attrIndex, out NodeAttributeType attrType))
+                return OperationResult<double>.Fail("AttributeTypeNotFound", $"Type not found for attribute '{attrName}'.");
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var rawResult = network.Nodeset.GetMultipleNodeAttributes(nodeIds, attrName);
+            if (!rawResult.Success)
+                return OperationResult<double>.Fail(rawResult.Code, rawResult.Message);
+            var raw = rawResult.Value!;
+
+            double r;
+            if (attrType == NodeAttributeType.Float || attrType == NodeAttributeType.Int)
+            {
+                var vals = new Dictionary<uint, double>(raw.Count);
+                foreach (var (id, obj) in raw)
+                    if (obj != null)
+                        vals[id] = attrType == NodeAttributeType.Int ? (double)(int)obj : (double)(float)obj;
+                r = NetworkLevelFunctions.ContinuousAssortativity(lr.Value!, vals);
+            }
+            else
+            {
+                var cats = new Dictionary<uint, string>(raw.Count);
+                foreach (var (id, obj) in raw)
+                    if (obj != null) cats[id] = obj.ToString()!;
+                r = NetworkLevelFunctions.CategoricalAssortativity(lr.Value!, cats);
+            }
+
+            return OperationResult<double>.Ok(r);
+        }
+
+        /// <summary>
+        /// Computes the MAN dyad census and reciprocity measures for a single 1-mode layer.
+        /// Returns counts of Mutual, Asymmetric and Null dyads plus ArcReciprocity and
+        /// DyadicReciprocity. Undirected layers are accepted: all non-null dyads are Mutual.
+        /// </summary>
+        public static OperationResult<Dictionary<string, object>> DyadCensus(Network network, string layerName)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<Dictionary<string, object>>.Fail("NodesMissing", "Network has no nodes.");
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            var result = NetworkLevelFunctions.DyadCensus(network.Nodeset.NodeIdArray, lr.Value!);
+            return OperationResult<Dictionary<string, object>>.Ok(result);
+        }
+
+        /// <summary>
+        /// Computes the coreness (k-shell index) of each node using k-core decomposition.
+        /// Iteratively removes nodes with degree less than k to find the maximal k-core.
+        /// Only 1-mode layers are accepted; 2-mode layers must be projected first.
+        /// </summary>
+        public static OperationResult Coreness(Network network, string[]? layerNames, string? attrName = null)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult.Fail("NodesMissing", "Network has no nodes.");
+
+            List<ILayerOneMode> oneModes = [];
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Coreness is not defined for 2-mode layers — use projecttwomodetoonemode() first, or specify only 1-mode layers.");
+                    if (layer is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success) return OperationResult.Fail(lr.Code, lr.Message);
+                    if (lr.Value is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Coreness is not defined for 2-mode layers — use projecttwomodetoonemode() first.");
+                    if (lr.Value is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            if (oneModes.Count == 0)
+                return OperationResult.Fail("NoLayers", "No 1-mode layers found.");
+
+            string layerTag = layerNames?.Length == 1 ? layerNames[0] + "_" : (layerNames == null ? "" : "multilayer_");
+            attrName = !string.IsNullOrEmpty(attrName) ? attrName : layerTag + "coreness";
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var values = LocalStructureFunctions.Coreness(nodeIds, oneModes);
+            var attrDict = values.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Int);
+        }
+
+        /// <summary>
+        /// Calculates betweenness centrality for all nodes using Brandes' algorithm with
+        /// hyperedge-aware BFS. Normalizes by (n-1)(n-2), the count of ordered pairs excluding
+        /// v; this holds for both directed and undirected layers, since the undirected
+        /// accumulation already sums each unordered pair twice (once per direction), which
+        /// cancels against halving the ordered-pair count. When sampleSize > 0, scales the
+        /// result by n/sampleSize. The per-source BFS passes (shared with ClosenessCentrality
+        /// and HarmonicCentrality) run in parallel across up to 'maxthreads' threads (see
+        /// 'setting()').
+        /// </summary>
+        public static OperationResult BetweennessCentrality(Network network, string[]? layerNames, string? attrName = null, int sampleSize = 0, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return err!;
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            uint[] sources = CentralityFunctions.SampleNodes(nodeIds, sampleSize);
+
+            var (bw, _, _, _) = CentralityFunctions.AccumulateBFSCentralitiesForSources(sources, one, dynTwo, statTwo, traversal);
+
+            var final = CentralityFunctions.FinalizeBetweenness(bw, nodeIds, sources.Length);
+            attrName = string.IsNullOrEmpty(attrName) ? "betweenness" : attrName;
+            var attrDict = final.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates edge betweenness centrality for every edge in a single 1-mode layer, storing
+        /// the result as a new valued layer (same directionality and selfties setting as the source
+        /// layer). Uses the same Brandes-based approach as BetweennessCentrality — each predecessor
+        /// edge on a shortest-path DAG is credited with the same contribution normally folded into
+        /// node betweenness — so it shares that command's cost profile and 'sampleSize'-based
+        /// approximation for large networks (Brandes &amp; Pich 2007). Kept as a separate command from
+        /// BetweennessCentrality rather than an option on it, since edge identity — unlike node
+        /// identity — has no clean mapping across combined layers, so this only operates on a single
+        /// named layer rather than a combined set. Normalizes the same way as BetweennessCentrality:
+        /// divide by (n-1)(n-2) regardless of directionality (see that method's remarks), when
+        /// normalize is true (the default), scaled by n/sampleSize when sampled. The per-source BFS
+        /// passes run in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult EdgeBetweennessCentrality(Network network, string layerName, string newLayerName, int sampleSize = 0, bool normalize = true)
+        {
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult.Fail(lr.Code, lr.Message);
+            ILayerOneMode layer = lr.Value!;
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            uint[] sources = CentralityFunctions.SampleNodes(nodeIds, sampleSize);
+
+            var raw = CentralityFunctions.AccumulateEdgeBetweennessForSources(sources, layer, EdgeTraversal.Out);
+            var final = normalize
+                ? CentralityFunctions.FinalizeEdgeBetweenness(raw, nodeIds.Length, sources.Length)
+                : raw;
+
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, layer.Directionality, EdgeType.Valued, layer.Selfties);
+            foreach (var ((from, to), value) in final)
+                newLayer._addEdge(from, to, (float)value);
+            newLayer._sortEdgesets();
+            newLayer._deduplicateEdgesets();
+            network.AddLayer(newLayerName, newLayer);
+
+            return OperationResult.Ok($"Edge betweenness centrality for layer '{layerName}' computed and stored as new layer '{newLayerName}'.");
+        }
+
+        /// <summary>
+        /// Calculates closeness centrality using Wasserman-Faust normalization, which handles
+        /// disconnected components by incorporating the reachable proportion of nodes.
+        /// When sampleSize > 0, uses a random subset of source nodes. The per-source BFS passes
+        /// (shared with BetweennessCentrality and HarmonicCentrality) run in parallel across up to
+        /// 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult ClosenessCentrality(Network network, string[]? layerNames, string? attrName = null, int sampleSize = 0, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return err!;
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            uint[] sources = CentralityFunctions.SampleNodes(nodeIds, sampleSize);
+
+            var (_, cdSum, cdReach, _) = CentralityFunctions.AccumulateBFSCentralitiesForSources(sources, one, dynTwo, statTwo, traversal);
+
+            var final = CentralityFunctions.FinalizeCloseness(cdSum, cdReach, nodeIds);
+            attrName = string.IsNullOrEmpty(attrName) ? "closeness" : attrName;
+            var attrDict = final.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates harmonic centrality (sum of inverse distances to all reachable nodes).
+        /// When normalize = true, divides by (n-1). Handles disconnected graphs naturally.
+        /// When sampleSize > 0, uses a random subset of source nodes. The per-source BFS passes
+        /// (shared with BetweennessCentrality and ClosenessCentrality) run in parallel across up to
+        /// 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult HarmonicCentrality(Network network, string[]? layerNames, string? attrName = null, int sampleSize = 0, bool normalize = true, EdgeTraversal traversal = EdgeTraversal.Out)
+        {
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return err!;
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            uint[] sources = CentralityFunctions.SampleNodes(nodeIds, sampleSize);
+
+            var (_, _, _, hm) = CentralityFunctions.AccumulateBFSCentralitiesForSources(sources, one, dynTwo, statTwo, traversal);
+
+            var final = CentralityFunctions.FinalizeHarmonic(hm, nodeIds, normalize);
+            attrName = string.IsNullOrEmpty(attrName) ? "harmonic" : attrName;
+            var attrDict = final.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates eigenvector centrality via power iteration. Converges to the dominant
+        /// eigenvector of the (projected) adjacency matrix. For 2-mode layers, uses efficient
+        /// per-hyperedge summation. Typically applied with EdgeTraversal.Both for undirected networks.
+        /// </summary>
+        public static OperationResult EigenvectorCentrality(Network network, string[]? layerNames,
+            string? attrName = null, EdgeTraversal traversal = EdgeTraversal.Out,
+            int maxIterations = 100, double tolerance = 1e-8)
+        {
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return err!;
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var scores = CentralityFunctions.EigenvectorCentrality(nodeIds, one, dynTwo, statTwo, traversal, maxIterations, tolerance);
+
+            attrName = string.IsNullOrEmpty(attrName) ? "eigenvector" : attrName;
+            var attrDict = scores.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates PageRank scores. Precomputes projected out-neighbor lists (deduplicated),
+        /// handles dangling nodes, and iterates until convergence. Default damping factor 0.85.
+        /// </summary>
+        public static OperationResult PageRank(Network network, string[]? layerNames, string? attrName = null, double dampingFactor = 0.85, int maxIterations = 100, double tolerance = 1e-8)
+        {
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return err!;
+
+            uint[] nodeIds = network.Nodeset.NodeIdArray;
+            var scores = CentralityFunctions.PageRank(nodeIds, one, dynTwo, statTwo, dampingFactor, maxIterations, tolerance);
+
+            attrName = string.IsNullOrEmpty(attrName) ? "pagerank" : attrName;
+            var attrDict = scores.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates local clustering coefficient for each node in the specified 1-mode layer(s)
+        /// and stores the result as a float node attribute. Only 1-mode layers are accepted;
+        /// 2-mode layers must be projected first via ProjectTwoModeToOneMode().
+        /// Auto-selects formula based on layer type (directed/undirected, binary/valued) unless
+        /// method is specified explicitly. The Onnela method is refused for any layer where
+        /// selfties are allowed, even if it has none, since its normalization by the global
+        /// maximum edge weight does not currently scan self-tie values.
+        /// When multiple layers are specified, adjacency is the union across all layers.
+        /// Each node's coefficient is independent of every other's, so the per-node computations
+        /// run in parallel across up to 'maxthreads' threads (see 'setting()').
+        /// </summary>
+        public static OperationResult ClusteringCoefficient(Network network, string[]? layerNames, string? attrName = null, ClusteringMethod method = ClusteringMethod.Auto, int sampleSize = 0)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult.Fail("NodesMissing", "Network has no nodes.");
+
+            List<ILayerOneMode> oneModes = [];
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Clustering coefficient is not defined for 2-mode layers — use projecttwomodetoonemode() first, or specify only 1-mode layers.");
+                    if (layer is ILayerOneMode lom)
+                    {
+                        if (method == ClusteringMethod.Onnela && lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Onnela's normalization (dividing by the global maximum edge weight) does not currently scan self-tie values when finding that maximum, so it is refused for any layer where selfties are allowed — even if none are actually present. Use a different method (e.g. 'barrat') for layers that permit selfties.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success) return OperationResult.Fail(lr.Code, lr.Message);
+                    if (lr.Value is ILayerTwoMode)
+                        return OperationResult.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Clustering coefficient is not defined for 2-mode layers — use projecttwomodetoonemode() first.");
+                    if (lr.Value is ILayerOneMode lom)
+                    {
+                        if (method == ClusteringMethod.Onnela && lom.Selfties)
+                            return OperationResult.Fail("LayerAllowsSelfties",
+                                $"Layer '{name}' allows selfties. Onnela's normalization (dividing by the global maximum edge weight) does not currently scan self-tie values when finding that maximum, so it is refused for any layer where selfties are allowed — even if none are actually present. Use a different method (e.g. 'barrat') for layers that permit selfties.");
+                        oneModes.Add(lom);
+                    }
+                }
+            }
+            if (oneModes.Count == 0)
+                return OperationResult.Fail("NoLayers", "No 1-mode layers found.");
+
+            uint[] allNodeIds = network.Nodeset.NodeIdArray;
+            uint[] sourceIds = (sampleSize > 0 && sampleSize < allNodeIds.Length)
+                ? CentralityFunctions.SampleNodes(allNodeIds, sampleSize)
+                : allNodeIds;
+
+            // Resolve actual method (in case Auto was passed) before naming the attribute
+            ClusteringMethod resolvedMethod = method == ClusteringMethod.Auto
+                ? LocalStructureFunctions.DetectMethod(oneModes)
+                : method;
+
+            string methodSuffix = resolvedMethod switch
+            {
+                ClusteringMethod.WattsStrogatz => "_ws",
+                ClusteringMethod.Fagiolo => "_fagiolo",
+                ClusteringMethod.Barrat => "_barrat",
+                ClusteringMethod.Onnela => "_onnela",
+                _ => ""
+            };
+
+            string layerTag = layerNames?.Length == 1 ? layerNames[0] + "_" : (layerNames == null ? "" : "multilayer_");
+            attrName = !string.IsNullOrEmpty(attrName) ? attrName : layerTag + "clustering" + methodSuffix;
+
+            var values = LocalStructureFunctions.ClusteringCoefficient(sourceIds, oneModes, resolvedMethod);
+            var attrDict = values.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString(CultureInfo.InvariantCulture));
+            return network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Float);
+        }
+
+        /// <summary>
+        /// Calculates the global clustering coefficient (transitivity) of the specified 1-mode layer(s):
+        /// ratio of closed triangles to all connected triples, treating edges as undirected.
+        /// Equivalent to 3T / Σ C(k,2) where T is the number of distinct triangles.
+        /// </summary>
+        public static OperationResult<double> Transitivity(Network network, string[]? layerNames)
+        {
+            if (network.Nodeset.Count == 0)
+                return OperationResult<double>.Fail("NodesMissing", "Network has no nodes.");
+
+            List<ILayerOneMode> oneModes = [];
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                        return OperationResult<double>.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Transitivity is not defined for 2-mode layers.");
+                    if (layer is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success) return OperationResult<double>.Fail(lr.Code, lr.Message);
+                    if (lr.Value is ILayerTwoMode)
+                        return OperationResult<double>.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer.");
+                    if (lr.Value is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            if (oneModes.Count == 0)
+                return OperationResult<double>.Fail("NoLayers", "No 1-mode layers found.");
+
+            double t = LocalStructureFunctions.Transitivity(network.Nodeset.NodeIdArray, oneModes);
+            return OperationResult<double>.Ok(t);
+        }
+
         /// <summary>
         /// Generates summary info about an attribute in a nodeset. The specific info that is returned depends on the type
         /// of node attribute.
@@ -61,184 +887,85 @@ namespace Threadle.Core.Analysis
         }
 
         /// <summary>
-        /// Calculates the shortest path between two nodes, either for a particular layer or for all layers.
-        /// To work with all layers, set layerName to an empty string. Note that the shortest path takes edge
-        /// directionality into account: if a layer has directional edges, this matters. For layers that are symmetric,
-        /// the directionality is moot.
-        /// If there is no path between the nodes, a distance of -1 is returned: note that this is also
-        /// wrapped in a OperationResult.Success.
-        /// Uses bidirectional BFS with hyperedge-aware expansion for 2-mode layers: each hyperedge's members
-        /// are iterated at most once per direction, preventing frontier explosion from large affiliations
-        /// (e.g. workplaces with 10k members).
+        /// Computes summary statistics (Mean, Median, StdDev, Min, Max, Q1, Q3) over the edge values
+        /// of a valued 1-mode layer, using the same statistics machinery as GetAttributeSummary.
+        /// Requires a valued layer — a binary layer has no varying values to summarize. For symmetric
+        /// (undirected) layers, each edge is counted once, not once per endpoint.
         /// </summary>
-        /// <param name="network">The network.</param>
-        /// <param name="layerNames">The names of the layers to use (or null to use all layers).</param>
-        /// <param name="nodeIdFrom">The source node id.</param>
-        /// <param name="nodeIdTo">The destination node id.</param>
-        /// <returns>An OperationResult containing the shortest path (integer) if successful; otherwise, an error message.</returns>
-        public static OperationResult<int> ShortestPath(Network network, string[]? layerNames, uint nodeIdFrom, uint nodeIdTo)
+        /// <param name="network">The Network structure.</param>
+        /// <param name="layerName">The name of the (valued) 1-mode layer.</param>
+        /// <returns>An <see cref="OperationResult"/> with Mean, Median, StdDev, Min, Max, Q1, Q3, LayerName and EdgeCount.</returns>
+        public static OperationResult<Dictionary<string, object>> GetLayerStats(Network network, string layerName)
+        {
+            var lr = network.GetOneModeLayerForRead(layerName);
+            if (!lr.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+            ILayerOneMode layer = lr.Value!;
+            if (!layer.IsValued)
+                return OperationResult<Dictionary<string, object>>.Fail("LayerNotValued", $"Layer '{layerName}' is binary — getlayerstats() requires a valued layer.");
+
+            List<float> values = Functions.GetLayerEdgeValues(layer, network.Nodeset.NodeIdArray);
+            var stats = Functions.CalculateValueStatistics(values);
+            stats["LayerName"] = layerName;
+            stats["EdgeCount"] = values.Count;
+            return OperationResult<Dictionary<string, object>>.Ok(stats);
+        }
+
+        public static OperationResult<ShortestPathResult> ShortestPath(Network network, string[]? layerNames, uint nodeIdFrom, uint nodeIdTo, bool returnPath = false)
         {
             OperationResult nodeCheckResult = network.Nodeset.CheckThatNodesExist(nodeIdFrom, nodeIdTo);
             if (!nodeCheckResult.Success)
-                return OperationResult<int>.Fail(nodeCheckResult.Code, nodeCheckResult.Message);
+                return OperationResult<ShortestPathResult>.Fail(nodeCheckResult.Code, nodeCheckResult.Message);
             if (nodeIdFrom == nodeIdTo)
-                return OperationResult<int>.Ok(0);
+                return OperationResult<ShortestPathResult>.Ok(new ShortestPathResult(0, returnPath ? [nodeIdFrom] : null));
 
-            List<ILayer> resolvedLayers = [];
-            if (layerNames == null)
-                resolvedLayers.AddRange(network.Layers.Values);
-            else
-            {
-                foreach (string layerName in layerNames)
-                {
-                    var layerResult = network.GetLayer(layerName);
-                    if (!layerResult.Success)
-                        return OperationResult<int>.Fail(layerResult);
-                    resolvedLayers.Add(layerResult.Value!);
-                }
-            }
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return OperationResult<ShortestPathResult>.Fail(err!.Code, err.Message);
 
-            // Separate layers by type to enable hyperedge-aware BFS for 2-mode layers.
-            // Large hyperedges (e.g. 10k-member workplaces) cause O(N^2) work if re-expanded once
-            // per co-member. Per-direction visited sets ensure each hyperedge is iterated at most once.
-            var oneModes = new List<ILayerOneMode>();
-            var twoModesDynamic = new List<LayerTwoMode>();
-            var twoModesStatic = new List<LayerTwoModeStatic>();
-            foreach (var layer in resolvedLayers)
-            {
-                if (layer is LayerTwoModeStatic lts) twoModesStatic.Add(lts);
-                else if (layer is LayerTwoMode ltm) twoModesDynamic.Add(ltm);
-                else if (layer is ILayerOneMode lom) oneModes.Add(lom);
-            }
-
-            // Per-direction, per-2-mode-layer visited hyperedge sets
-            var fwdDynVisited = Array.ConvertAll(twoModesDynamic.ToArray(), _ => new HashSet<Hyperedge>(ReferenceEqualityComparer.Instance));
-            var bwdDynVisited = Array.ConvertAll(twoModesDynamic.ToArray(), _ => new HashSet<Hyperedge>(ReferenceEqualityComparer.Instance));
-            var fwdStatVisited = Array.ConvertAll(twoModesStatic.ToArray(), _ => new HashSet<int>());
-            var bwdStatVisited = Array.ConvertAll(twoModesStatic.ToArray(), _ => new HashSet<int>());
-
-            var distFwd = new Dictionary<uint, int> { [nodeIdFrom] = 0 };
-            var distBwd = new Dictionary<uint, int> { [nodeIdTo] = 0 };
-            List<uint> frontierFwd = [nodeIdFrom];
-            List<uint> frontierBwd = [nodeIdTo];
-            int best = int.MaxValue;
-            int dFwd = 0, dBwd = 0;
-
-            while (frontierFwd.Count > 0 || frontierBwd.Count > 0)
-            {
-                if (best != int.MaxValue && best <= dFwd + dBwd + 1)
-                    break;
-
-                if (frontierFwd.Count > 0 && (frontierBwd.Count == 0 || frontierFwd.Count <= frontierBwd.Count))
-                {
-                    dFwd++;
-                    List<uint> next = [];
-                    foreach (uint u in frontierFwd)
-                    {
-                        foreach (var layer in oneModes)
-                            foreach (uint v in layer.GetNodeAlters(u, EdgeTraversal.Out))
-                                if (distFwd.TryAdd(v, dFwd))
-                                {
-                                    next.Add(v);
-                                    if (distBwd.TryGetValue(v, out int bd))
-                                        best = Math.Min(best, dFwd + bd);
-                                }
-
-                        for (int li = 0; li < twoModesDynamic.Count; li++)
-                        {
-                            var hec = twoModesDynamic[li].GetNonEmptyHyperedgeCollection(u);
-                            if (hec == null) continue;
-                            foreach (var he in hec.HyperEdges)
-                                if (fwdDynVisited[li].Add(he))
-                                    foreach (uint m in he.NodeIds)
-                                        if (distFwd.TryAdd(m, dFwd))
-                                        {
-                                            next.Add(m);
-                                            if (distBwd.TryGetValue(m, out int bd))
-                                                best = Math.Min(best, dFwd + bd);
-                                        }
-                        }
-
-                        for (int li = 0; li < twoModesStatic.Count; li++)
-                        {
-                            if (!twoModesStatic[li].TryGetNodeHyperedgeRange(u, out int nStart, out int nEnd)) continue;
-                            for (int k = nStart; k < nEnd; k++)
-                            {
-                                int hIdx = twoModesStatic[li].GetNodeHyperedgeIndex(k);
-                                if (!fwdStatVisited[li].Add(hIdx)) continue;
-                                twoModesStatic[li].GetHyperedgeRange(hIdx, out int hStart, out int hEnd);
-                                for (int j = hStart; j < hEnd; j++)
-                                {
-                                    uint m = twoModesStatic[li].GetHyperedgeNodeAt(j);
-                                    if (distFwd.TryAdd(m, dFwd))
-                                    {
-                                        next.Add(m);
-                                        if (distBwd.TryGetValue(m, out int bd))
-                                            best = Math.Min(best, dFwd + bd);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    frontierFwd = next;
-                }
-                else
-                {
-                    dBwd++;
-                    List<uint> next = [];
-                    foreach (uint u in frontierBwd)
-                    {
-                        foreach (var layer in oneModes)
-                            foreach (uint v in layer.GetNodeAlters(u, EdgeTraversal.In))
-                                if (distBwd.TryAdd(v, dBwd))
-                                {
-                                    next.Add(v);
-                                    if (distFwd.TryGetValue(v, out int fd))
-                                        best = Math.Min(best, fd + dBwd);
-                                }
-
-                        for (int li = 0; li < twoModesDynamic.Count; li++)
-                        {
-                            var hec = twoModesDynamic[li].GetNonEmptyHyperedgeCollection(u);
-                            if (hec == null) continue;
-                            foreach (var he in hec.HyperEdges)
-                                if (bwdDynVisited[li].Add(he))
-                                    foreach (uint m in he.NodeIds)
-                                        if (distBwd.TryAdd(m, dBwd))
-                                        {
-                                            next.Add(m);
-                                            if (distFwd.TryGetValue(m, out int fd))
-                                                best = Math.Min(best, fd + dBwd);
-                                        }
-                        }
-
-                        for (int li = 0; li < twoModesStatic.Count; li++)
-                        {
-                            if (!twoModesStatic[li].TryGetNodeHyperedgeRange(u, out int nStart, out int nEnd)) continue;
-                            for (int k = nStart; k < nEnd; k++)
-                            {
-                                int hIdx = twoModesStatic[li].GetNodeHyperedgeIndex(k);
-                                if (!bwdStatVisited[li].Add(hIdx)) continue;
-                                twoModesStatic[li].GetHyperedgeRange(hIdx, out int hStart, out int hEnd);
-                                for (int j = hStart; j < hEnd; j++)
-                                {
-                                    uint m = twoModesStatic[li].GetHyperedgeNodeAt(j);
-                                    if (distBwd.TryAdd(m, dBwd))
-                                    {
-                                        next.Add(m);
-                                        if (distFwd.TryGetValue(m, out int fd))
-                                            best = Math.Min(best, fd + dBwd);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    frontierBwd = next;
-                }
-            }
-
-            return OperationResult<int>.Ok(best == int.MaxValue ? -1 : best);
+            return OperationResult<ShortestPathResult>.Ok(
+                PathFunctions.BidirectionalBFS(nodeIdFrom, nodeIdTo, one, dynTwo, statTwo, returnPath));
         }
+
+        /// <summary>
+        /// Calculates exact shortest paths for a batch of node pairs, in parallel (up to the 'maxthreads'
+        /// setting, see 'setting()'). Layers are resolved once and shared (read-only) across all pairs; each
+        /// pair's result is written to its own independent output slot, so no merging of shared state is
+        /// needed. Results are returned in the same order as 'pairs'.
+        /// </summary>
+        /// <param name="network">The network.</param>
+        /// <param name="layerNames">The names of the layers to use (or null to use all layers).</param>
+        /// <param name="pairs">The node id pairs (from, to) to compute shortest paths for.</param>
+        /// <param name="returnPath">If true, each result also contains the sequence of node ids along the shortest path.</param>
+        /// <returns>An <see cref="OperationResult"/> containing a list of (From, To, Result) tuples, one per pair, in the same order as 'pairs'.</returns>
+        public static OperationResult<List<(uint From, uint To, ShortestPathResult Result)>> ShortestPaths(Network network, string[]? layerNames, IReadOnlyList<(uint From, uint To)> pairs, bool returnPath = false)
+        {
+            if (pairs.Count == 0)
+                return OperationResult<List<(uint, uint, ShortestPathResult)>>.Ok([]);
+
+            foreach ((uint from, uint to) in pairs)
+            {
+                OperationResult nodeCheckResult = network.Nodeset.CheckThatNodesExist(from, to);
+                if (!nodeCheckResult.Success)
+                    return OperationResult<List<(uint, uint, ShortestPathResult)>>.Fail(nodeCheckResult.Code, nodeCheckResult.Message);
+            }
+
+            if (!TryResolveLayers(network, layerNames, out var one, out var dynTwo, out var statTwo, out var err))
+                return OperationResult<List<(uint, uint, ShortestPathResult)>>.Fail(err!.Code, err.Message);
+
+            var results = new (uint From, uint To, ShortestPathResult Result)[pairs.Count];
+
+            System.Threading.Tasks.Parallel.For(0, pairs.Count, UserSettings.GetParallelOptions(), i =>
+            {
+                (uint from, uint to) = pairs[i];
+                ShortestPathResult result = from == to
+                    ? new ShortestPathResult(0, returnPath ? [from] : null)
+                    : PathFunctions.BidirectionalBFS(from, to, one, dynTwo, statTwo, returnPath);
+                results[i] = (from, to, result);
+            });
+
+            return OperationResult<List<(uint, uint, ShortestPathResult)>>.Ok([.. results]);
+        }
+
 
         ///// <summary>
         ///// Calculates the shortest path between two nodes, either for a particular layer or for all layers.
@@ -247,22 +974,25 @@ namespace Threadle.Core.Analysis
         ///// the directionality is moot.
         ///// If there is no path between the nodes, a distance of -1 is returned: note that this is also
         ///// wrapped in a OperationResult.Success.
+        ///// Uses bidirectional BFS with hyperedge-aware expansion for 2-mode layers: each hyperedge's members
+        ///// are iterated at most once per direction, preventing frontier explosion from large affiliations
+        ///// (e.g. workplaces with 10k members).
         ///// </summary>
         ///// <param name="network">The network.</param>
-        ///// <param name="layerName">The name of the layer (or an empty/null string if all layers should be used)</param>
+        ///// <param name="layerNames">The names of the layers to use (or null to use all layers).</param>
         ///// <param name="nodeIdFrom">The source node id.</param>
         ///// <param name="nodeIdTo">The destination node id.</param>
-        ///// <returns>An OperationResult containing the shortest path (integer) if successful; otherwise, an error message.</returns>
-        //public static OperationResult<int> ShortestPath(Network network, string[]? layerNames, uint nodeIdFrom, uint nodeIdTo)
+        ///// <param name="returnPath">If true, the result also contains the sequence of node ids along the shortest path.</param>
+        ///// <returns>An OperationResult containing a ShortestPathResult with distance and optional path.</returns>
+        //public static OperationResult<ShortestPathResult> ShortestPath(Network network, string[]? layerNames, uint nodeIdFrom, uint nodeIdTo, bool returnPath = false)
         //{
         //    OperationResult nodeCheckResult = network.Nodeset.CheckThatNodesExist(nodeIdFrom, nodeIdTo);
         //    if (!nodeCheckResult.Success)
-        //        return OperationResult<int>.Fail(nodeCheckResult.Code, nodeCheckResult.Message);
+        //        return OperationResult<ShortestPathResult>.Fail(nodeCheckResult.Code, nodeCheckResult.Message);
         //    if (nodeIdFrom == nodeIdTo)
-        //        return OperationResult<int>.Ok(0);
+        //        return OperationResult<ShortestPathResult>.Ok(new ShortestPathResult(0, returnPath ? [nodeIdFrom] : null));
 
         //    List<ILayer> resolvedLayers = [];
-        //    // If no layerNames specified (i.e. null), use all layers
         //    if (layerNames == null)
         //        resolvedLayers.AddRange(network.Layers.Values);
         //    else
@@ -271,34 +1001,192 @@ namespace Threadle.Core.Analysis
         //        {
         //            var layerResult = network.GetLayer(layerName);
         //            if (!layerResult.Success)
-        //                return OperationResult<int>.Fail(layerResult);
+        //                return OperationResult<ShortestPathResult>.Fail(layerResult);
         //            resolvedLayers.Add(layerResult.Value!);
         //        }
         //    }
 
-        //    Queue<uint> queue = [];
-        //    HashSet<uint> visited = [];
-        //    Dictionary<uint, int> distances = [];
-        //    queue.Enqueue(nodeIdFrom);
-        //    visited.Add(nodeIdFrom);
-        //    distances[nodeIdFrom] = 0;
-        //    while (queue.Count > 0)
+        //    GraphAlgorithms.SplitLayers(resolvedLayers, out var oneModes, out var twoModesDynamic, out var twoModesStatic);
+
+        //    var fwdDynVisited = Array.ConvertAll(twoModesDynamic.ToArray(), _ => new HashSet<Hyperedge>(ReferenceEqualityComparer.Instance));
+        //    var bwdDynVisited = Array.ConvertAll(twoModesDynamic.ToArray(), _ => new HashSet<Hyperedge>(ReferenceEqualityComparer.Instance));
+        //    var fwdStatVisited = Array.ConvertAll(twoModesStatic.ToArray(), _ => new HashSet<int>());
+        //    var bwdStatVisited = Array.ConvertAll(twoModesStatic.ToArray(), _ => new HashSet<int>());
+
+        //    var distFwd = new Dictionary<uint, int> { [nodeIdFrom] = 0 };
+        //    var distBwd = new Dictionary<uint, int> { [nodeIdTo] = 0 };
+        //    Dictionary<uint, uint>? predFwd = returnPath ? [] : null;
+        //    Dictionary<uint, uint>? predBwd = returnPath ? [] : null;
+        //    List<uint> frontierFwd = [nodeIdFrom];
+        //    List<uint> frontierBwd = [nodeIdTo];
+        //    int best = int.MaxValue;
+        //    uint meetingNode = 0;
+        //    int dFwd = 0, dBwd = 0;
+
+        //    while (frontierFwd.Count > 0 || frontierBwd.Count > 0)
         //    {
-        //        uint current = queue.Dequeue();
-        //        foreach (var layer in resolvedLayers)
-        //            foreach (uint neighborId in layer.GetNodeAlters(current,EdgeTraversal.Out))
+        //        if (best != int.MaxValue && best <= dFwd + dBwd + 1)
+        //            break;
+
+        //        if (frontierFwd.Count > 0 && (frontierBwd.Count == 0 || frontierFwd.Count <= frontierBwd.Count))
+        //        {
+        //            dFwd++;
+        //            List<uint> next = [];
+        //            foreach (uint u in frontierFwd)
         //            {
-        //                if (!visited.Contains(neighborId))
+        //                foreach (var layer in oneModes)
+        //                    foreach (uint v in layer.GetNodeAlters(u, EdgeTraversal.Out))
+        //                        if (distFwd.TryAdd(v, dFwd))
+        //                        {
+        //                            next.Add(v);
+        //                            if (returnPath) predFwd![v] = u;
+        //                            if (distBwd.TryGetValue(v, out int bd))
+        //                            {
+        //                                int c = dFwd + bd;
+        //                                if (c < best) { best = c; meetingNode = v; }
+        //                            }
+        //                        }
+
+        //                for (int li = 0; li < twoModesDynamic.Count; li++)
         //                {
-        //                    visited.Add(neighborId);
-        //                    distances[neighborId] = distances[current] + 1;
-        //                    if (neighborId == nodeIdTo)
-        //                        return OperationResult<int>.Ok(distances[neighborId]);
-        //                    queue.Enqueue(neighborId);
+        //                    var hec = twoModesDynamic[li].GetNonEmptyHyperedgeCollection(u);
+        //                    if (hec == null) continue;
+        //                    foreach (var he in hec.HyperEdges)
+        //                        if (fwdDynVisited[li].Add(he))
+        //                            foreach (uint m in he.NodeIds)
+        //                                if (distFwd.TryAdd(m, dFwd))
+        //                                {
+        //                                    next.Add(m);
+        //                                    if (returnPath) predFwd![m] = u;
+        //                                    if (distBwd.TryGetValue(m, out int bd))
+        //                                    {
+        //                                        int c = dFwd + bd;
+        //                                        if (c < best) { best = c; meetingNode = m; }
+        //                                    }
+        //                                }
+        //                }
+
+        //                for (int li = 0; li < twoModesStatic.Count; li++)
+        //                {
+        //                    if (!twoModesStatic[li].TryGetNodeHyperedgeRange(u, out int nStart, out int nEnd)) continue;
+        //                    for (int k = nStart; k < nEnd; k++)
+        //                    {
+        //                        int hIdx = twoModesStatic[li].GetNodeHyperedgeIndex(k);
+        //                        if (!fwdStatVisited[li].Add(hIdx)) continue;
+        //                        twoModesStatic[li].GetHyperedgeRange(hIdx, out int hStart, out int hEnd);
+        //                        for (int j = hStart; j < hEnd; j++)
+        //                        {
+        //                            uint m = twoModesStatic[li].GetHyperedgeNodeAt(j);
+        //                            if (distFwd.TryAdd(m, dFwd))
+        //                            {
+        //                                next.Add(m);
+        //                                if (returnPath) predFwd![m] = u;
+        //                                if (distBwd.TryGetValue(m, out int bd))
+        //                                {
+        //                                    int c = dFwd + bd;
+        //                                    if (c < best) { best = c; meetingNode = m; }
+        //                                }
+        //                            }
+        //                        }
+        //                    }
         //                }
         //            }
+        //            frontierFwd = next;
+        //        }
+        //        else
+        //        {
+        //            dBwd++;
+        //            List<uint> next = [];
+        //            foreach (uint u in frontierBwd)
+        //            {
+        //                foreach (var layer in oneModes)
+        //                    foreach (uint v in layer.GetNodeAlters(u, EdgeTraversal.In))
+        //                        if (distBwd.TryAdd(v, dBwd))
+        //                        {
+        //                            next.Add(v);
+        //                            if (returnPath) predBwd![v] = u;
+        //                            if (distFwd.TryGetValue(v, out int fd))
+        //                            {
+        //                                int c = fd + dBwd;
+        //                                if (c < best) { best = c; meetingNode = v; }
+        //                            }
+        //                        }
+
+        //                for (int li = 0; li < twoModesDynamic.Count; li++)
+        //                {
+        //                    var hec = twoModesDynamic[li].GetNonEmptyHyperedgeCollection(u);
+        //                    if (hec == null) continue;
+        //                    foreach (var he in hec.HyperEdges)
+        //                        if (bwdDynVisited[li].Add(he))
+        //                            foreach (uint m in he.NodeIds)
+        //                                if (distBwd.TryAdd(m, dBwd))
+        //                                {
+        //                                    next.Add(m);
+        //                                    if (returnPath) predBwd![m] = u;
+        //                                    if (distFwd.TryGetValue(m, out int fd))
+        //                                    {
+        //                                        int c = fd + dBwd;
+        //                                        if (c < best) { best = c; meetingNode = m; }
+        //                                    }
+        //                                }
+        //                }
+
+        //                for (int li = 0; li < twoModesStatic.Count; li++)
+        //                {
+        //                    if (!twoModesStatic[li].TryGetNodeHyperedgeRange(u, out int nStart, out int nEnd)) continue;
+        //                    for (int k = nStart; k < nEnd; k++)
+        //                    {
+        //                        int hIdx = twoModesStatic[li].GetNodeHyperedgeIndex(k);
+        //                        if (!bwdStatVisited[li].Add(hIdx)) continue;
+        //                        twoModesStatic[li].GetHyperedgeRange(hIdx, out int hStart, out int hEnd);
+        //                        for (int j = hStart; j < hEnd; j++)
+        //                        {
+        //                            uint m = twoModesStatic[li].GetHyperedgeNodeAt(j);
+        //                            if (distBwd.TryAdd(m, dBwd))
+        //                            {
+        //                                next.Add(m);
+        //                                if (returnPath) predBwd![m] = u;
+        //                                if (distFwd.TryGetValue(m, out int fd))
+        //                                {
+        //                                    int c = fd + dBwd;
+        //                                    if (c < best) { best = c; meetingNode = m; }
+        //                                }
+        //                            }
+        //                        }
+        //                    }
+        //                }
+        //            }
+        //            frontierBwd = next;
+        //        }
         //    }
-        //    return OperationResult<int>.Ok(-1);
+
+        //    int distance = best == int.MaxValue ? -1 : best;
+
+        //    uint[]? path = null;
+        //    if (returnPath && distance >= 0)
+        //    {
+        //        // Trace forward half: meetingNode → nodeIdFrom via predFwd, then reverse
+        //        var pathList = new List<uint>();
+        //        uint cur = meetingNode;
+        //        while (cur != nodeIdFrom)
+        //        {
+        //            pathList.Add(cur);
+        //            cur = predFwd![cur];
+        //        }
+        //        pathList.Add(nodeIdFrom);
+        //        pathList.Reverse(); // now [nodeIdFrom, ..., meetingNode]
+
+        //        // Trace backward half: meetingNode → nodeIdTo via predBwd
+        //        cur = meetingNode;
+        //        while (cur != nodeIdTo)
+        //        {
+        //            cur = predBwd![cur];
+        //            pathList.Add(cur);
+        //        }
+        //        path = [.. pathList];
+        //    }
+
+        //    return OperationResult<ShortestPathResult>.Ok(new ShortestPathResult(distance, path));
         //}
 
         /// <summary>
@@ -398,9 +1286,15 @@ namespace Threadle.Core.Analysis
         /// Given an ego node, returns a random alter. Resolves layer names then delegates to the
         /// pre-resolved overload. For hot-path walk loops, resolve layers once and use
         /// GetRandomAlter(uint, IReadOnlyList<ILayer>, ...) directly.
+        /// 'layerWeights', if given, applies only when 'balanced' is true and there is more than one
+        /// layer: it controls the probability of picking each layer first (proportionally — they need
+        /// not sum to 1), parallel in order to 'layerNames', which must then be given explicitly (there
+        /// is no way to match weights to "all layers" reliably). It is otherwise ignored.
         /// </summary>
-        public static OperationResult<uint> GetRandomAlter(Network network, uint nodeId, string[]? layerNames, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false)
+        public static OperationResult<uint> GetRandomAlter(Network network, uint nodeId, string[]? layerNames, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false, float[]? layerWeights = null)
         {
+            if (layerWeights != null && layerNames == null)
+                return OperationResult<uint>.Fail("InvalidArguments", "'layerweights' requires 'layernames' to be given explicitly, so each weight can be matched to a specific layer.");
             List<ILayer> layersToUse = [];
             if (layerNames == null)
                 layersToUse.AddRange(network.Layers.Values);
@@ -414,16 +1308,26 @@ namespace Threadle.Core.Analysis
                     layersToUse.Add(layerResult.Value!);
                 }
             }
-            return GetRandomAlter(nodeId, layersToUse, edgeTraversal, balanced, weighted);
+            return GetRandomAlter(nodeId, layersToUse, edgeTraversal, balanced, weighted, layerWeights);
         }
 
         /// <summary>
         /// Hot-path overload: accepts pre-resolved layers to avoid per-step layer lookup and List allocation.
         /// For non-balanced 2-mode layers the fast path (PickRandomAlterO1 / AppendProjectedAltersReservoir)
         /// is used via ILayerTwoMode, covering both LayerTwoMode and LayerTwoModeStatic.
+        /// 'layerWeights', if given, must be parallel in order to 'layersToUse' (same length) and all
+        /// positive; it applies only when 'balanced' is true and there is more than one layer.
         /// </summary>
-        public static OperationResult<uint> GetRandomAlter(uint nodeId, IReadOnlyList<ILayer> layersToUse, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false)
+        public static OperationResult<uint> GetRandomAlter(uint nodeId, IReadOnlyList<ILayer> layersToUse, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false, float[]? layerWeights = null)
         {
+            if (layerWeights != null)
+            {
+                if (layerWeights.Length != layersToUse.Count)
+                    return OperationResult<uint>.Fail("LengthMismatch", $"The number of layer weights ({layerWeights.Length}) differs from the number of layers ({layersToUse.Count}).");
+                if (layerWeights.Any(w => w <= 0))
+                    return OperationResult<uint>.Fail("InvalidArguments", "All layer weights must be positive.");
+            }
+
             if (weighted)
             {
                 List<(uint alterId, float weight)> candidates = [];
@@ -434,12 +1338,15 @@ namespace Threadle.Core.Analysis
                 }
                 else
                 {
-                    List<ILayer> eligibleLayers = layersToUse
-                        .Where(l => l.GetNodeAlters(nodeId, edgeTraversal).Length > 0)
-                        .ToList();
-                    if (eligibleLayers.Count == 0)
+                    bool[] eligible = new bool[layersToUse.Count];
+                    bool anyEligible = false;
+                    for (int i = 0; i < layersToUse.Count; i++)
+                        if (layersToUse[i].GetNodeAlters(nodeId, edgeTraversal).Length > 0)
+                            anyEligible = eligible[i] = true;
+                    if (!anyEligible)
                         return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-                    Functions.AppendWeightedCandidates(candidates, eligibleLayers[Misc.Random.Next(eligibleLayers.Count)], nodeId, edgeTraversal);
+                    int chosenIndex = PickWeightedLayerIndex(layersToUse.Count, eligible, layerWeights);
+                    Functions.AppendWeightedCandidates(candidates, layersToUse[chosenIndex], nodeId, edgeTraversal);
                 }
                 if (candidates.Count == 0)
                     return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
@@ -482,121 +1389,49 @@ namespace Threadle.Core.Analysis
             }
             else
             {
-                // Balanced and multiple layers: uniform pick of layer, then uniform pick within
-                List<uint[]> layerAltersList = layersToUse
-                    .Select(l => l.GetNodeAlters(nodeId, edgeTraversal))
-                    .Where(a => a.Length > 0)
-                    .ToList();
-                if (layerAltersList.Count == 0)
+                // Balanced and multiple layers: pick a layer (weighted by 'layerWeights' if given,
+                // uniform otherwise), then uniform pick of alter within it.
+                bool[] eligible = new bool[layersToUse.Count];
+                uint[][] altersPerLayer = new uint[layersToUse.Count][];
+                bool anyEligible = false;
+                for (int i = 0; i < layersToUse.Count; i++)
+                {
+                    altersPerLayer[i] = layersToUse[i].GetNodeAlters(nodeId, edgeTraversal);
+                    if (altersPerLayer[i].Length > 0)
+                        anyEligible = eligible[i] = true;
+                }
+                if (!anyEligible)
                     return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-                uint[] chosenLayerAlters = layerAltersList[Misc.Random.Next(layerAltersList.Count)];
+                uint[] chosenLayerAlters = altersPerLayer[PickWeightedLayerIndex(layersToUse.Count, eligible, layerWeights)];
                 return OperationResult<uint>.Ok(chosenLayerAlters[Misc.Random.Next(chosenLayerAlters.Length)]);
             }
         }
 
-
         /// <summary>
-        /// Given an ego node, this method returns a random alter of this node, either for a specific layer or all layers.
-        /// If no layer is specified, i.e. so that all layers are used, this pick can either be done balanced (first picking
-        /// a random layer, and subsequently picking an alter from one of these layers) or non-balanced (pooling together all
-        /// alters in all layers and then picking one from this set). For the latter, it is thus possible that an alter could
-        /// appear more than once in the choice set.
-        /// For directed layers, it is also possible to specify whether outbound, inbound or both-directional alters should be included.
+        /// Picks one eligible layer (by index into a 'count'-length list), weighted by 'layerWeights' if
+        /// given (parallel by index; ineligible entries are simply skipped), or uniformly otherwise.
+        /// Assumes at least one entry in 'eligible' is true.
         /// </summary>
-        /// <param name="network">The Network object.</param>
-        /// <param name="nodeId">The ego node id.</param>
-        /// <param name="layerNames">The names of the layers to pick from. If left blank or null, all layers are used.</param>
-        /// <param name="edgeTraversal">An <see cref="EdgeTraversal"/> value indicating whether inbound- or outbound-going edges (or both) should be considered.</param>
-        /// <param name="balanced">Indicates whether the pick should be balanced across layers.</param>
-        /// <param name="weighted">If true, uses edge weights as transition probabilities. Binary layers treat each alter as weight 1.0f.</param>
-        /// <returns>An <see cref="OperationResult{T}"/> containing the random alter node id if successful; otherwise, an error message.</returns>
-        //public static OperationResult<uint> GetRandomAlter(Network network, uint nodeId, string[]? layerNames, EdgeTraversal edgeTraversal = EdgeTraversal.Both, bool balanced = false, bool weighted = false)
-        //{
-        //    // Build up the set of layers to use (note: both 1-mode and 2-mode are okay)
-        //    List<ILayer> layersToUse = [];
-        //    if (layerNames == null)
-        //        layersToUse.AddRange(network.Layers.Values);
-        //    else
-        //    {
-        //        foreach (string layerName in layerNames)
-        //        {
-        //            var layerResult=network.GetLayer(layerName);
-        //            if (!layerResult.Success)
-        //                return OperationResult<uint>.Fail(layerResult);
-        //            layersToUse.Add(layerResult.Value!);
-        //        }
-        //    }
-
-        //    if (weighted)
-        //    {
-        //        List<(uint alterId, float weight)> candidates = [];
-        //        if (layersToUse.Count==1 || !balanced)
-        //        {
-        //            foreach (var layer in layersToUse)
-        //                Functions.AppendWeightedCandidates(candidates, layer, nodeId, edgeTraversal);
-        //        }
-        //        else
-        //        {
-        //            // Balanced with more than 1 layer: first uniform pick among layers, then weighted pick within
-        //            List<ILayer> eligibleLayers = layersToUse
-        //                .Where(l => l.GetNodeAlters(nodeId, edgeTraversal).Length > 0)
-        //                .ToList();
-        //            if (eligibleLayers.Count==0)
-        //                return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-        //            Functions.AppendWeightedCandidates(candidates, eligibleLayers[Misc.Random.Next(eligibleLayers.Count)], nodeId, edgeTraversal);
-        //        }
-        //        if (candidates.Count==0)
-        //            return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
-        //        return OperationResult<uint>.Ok(Functions.WeightedPick(candidates));
-        //    }
-
-        //    // Non-weighted follows
-        //    if (layersToUse.Count == 1 || !balanced)
-        //    {
-        //        if (layersToUse.Count == 1 && layersToUse[0] is ILayerTwoMode itm_single)
-        //        {
-        //            // Single 2-mode layer (dynamic or static): O(1) fast path, zero allocation
-        //            uint? fastPick = itm_single.PickRandomAlterO1(nodeId);
-        //            return fastPick.HasValue
-        //                ? OperationResult<uint>.Ok(fastPick.Value)
-        //                : OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
-        //        }
-        //        if (layersToUse.Count == 1)
-        //        {
-        //            // Single 1-mode layer
-        //            uint[] alts = layersToUse[0].GetNodeAlters(nodeId, edgeTraversal);
-        //            return alts.Length > 0
-        //                ? OperationResult<uint>.Ok(alts[Misc.Random.Next(alts.Length)])
-        //                : OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
-        //        }
-        //        // Multi-layer pooled: reservoir sampling, zero allocation for 2-mode layers
-        //        uint? selected = null;
-        //        int totalCount = 0;
-        //        foreach (var layer in layersToUse)
-        //        {
-        //            if (layer is ILayerTwoMode itm2)
-        //                itm2.AppendProjectedAltersReservoir(nodeId, ref selected, ref totalCount);
-        //            else
-        //                foreach (uint m in layer.GetNodeAlters(nodeId, edgeTraversal))
-        //                { totalCount++; if (Misc.Random.Next(totalCount) == 0) selected = m; }
-        //        }
-        //        if (totalCount == 0)
-        //            return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in the specified layer(s) with the given edge traversal.");
-        //        return OperationResult<uint>.Ok(selected!.Value);
-        //    }
-        //    else
-        //    {
-        //        // Balanced and multiple layers: uniform pick of layer, then uniform pick within
-        //        List<uint[]> layerAltersList = layersToUse
-        //            .Select(l => l.GetNodeAlters(nodeId, edgeTraversal))
-        //            .Where(a => a.Length > 0)
-        //            .ToList();
-        //        if (layerAltersList.Count == 0)
-        //            return OperationResult<uint>.Fail("ConstraintNoAlters", $"Node {nodeId} has no alters in any of the specified layers with the given edge traversal.");
-        //        uint[] chosenLayerAlters = layerAltersList[Misc.Random.Next(layerAltersList.Count)];
-        //        return OperationResult<uint>.Ok(chosenLayerAlters[Misc.Random.Next(chosenLayerAlters.Length)]);
-        //    }
-        //}
+        private static int PickWeightedLayerIndex(int count, bool[] eligible, float[]? layerWeights)
+        {
+            float total = 0f;
+            for (int i = 0; i < count; i++)
+                if (eligible[i])
+                    total += layerWeights?[i] ?? 1f;
+            double r = Misc.Random.NextDouble() * total;
+            double cum = 0;
+            int lastEligible = -1;
+            for (int i = 0; i < count; i++)
+            {
+                if (!eligible[i])
+                    continue;
+                lastEligible = i;
+                cum += layerWeights?[i] ?? 1f;
+                if (r < cum)
+                    return i;
+            }
+            return lastEligible; // floating-point fallback: last eligible index
+        }
 
         /// <summary>
         /// Selects a random node identifier from the specified nodeset.
@@ -644,6 +1479,124 @@ namespace Threadle.Core.Analysis
             if (randomEdge == null)
                 return OperationResult<Dictionary<string, object>>.Fail("EdgeNotFound", $"Could not find any edge in layer {layerName}.");
             return OperationResult<Dictionary<string, object>>.Ok(randomEdge, "Random edge found through non-polling.");
+        }
+        #endregion
+
+        #region Methods (private)
+        private static bool TryResolveLayers(Network network, string[]? layerNames, out List<ILayerOneMode> oneModes, out List<LayerTwoMode> twoModesDynamic, out List<LayerTwoModeStatic> twoModesStatic, out OperationResult? error)
+        {
+            List<ILayer> resolved = [];
+            if (layerNames == null)
+                resolved.AddRange(network.Layers.Values);
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success)
+                    {
+                        oneModes = []; twoModesDynamic = []; twoModesStatic = [];
+                        error = OperationResult.Fail(lr.Code, lr.Message);
+                        return false;
+                    }
+                    resolved.Add(lr.Value!);
+                }
+            }
+            GraphAlgorithms.SplitLayers(resolved, out oneModes, out twoModesDynamic, out twoModesStatic);
+            error = null;
+            return true;
+        }
+
+        /// <summary>
+        /// Resolves layerNames to a 1-mode-only layer list, shared by every community detection
+        /// method (CommunityDetectionLouvain, CommunityDetectionLabelPropagation, and future ones).
+        /// Rejects 2-mode layers with a "project first" message, matching Coreness/ClusteringCoefficient.
+        /// </summary>
+        private static bool TryResolveOneModeLayersForCommunityDetection(Network network, string[]? layerNames, out List<ILayerOneMode> oneModes, out OperationResult<Dictionary<string, object>>? error)
+        {
+            oneModes = [];
+            if (network.Nodeset.Count == 0)
+            {
+                error = OperationResult<Dictionary<string, object>>.Fail("NodesMissing", "Network has no nodes.");
+                return false;
+            }
+
+            if (layerNames == null)
+            {
+                foreach (var (name, layer) in network.Layers)
+                {
+                    if (layer is ILayerTwoMode)
+                    {
+                        error = OperationResult<Dictionary<string, object>>.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Community detection requires 1-mode layers — use projecttwomodetoonemode() first, or specify only 1-mode layers.");
+                        return false;
+                    }
+                    if (layer is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            else
+            {
+                foreach (string name in layerNames)
+                {
+                    var lr = network.GetLayer(name);
+                    if (!lr.Success)
+                    {
+                        error = OperationResult<Dictionary<string, object>>.Fail(lr.Code, lr.Message);
+                        return false;
+                    }
+                    if (lr.Value is ILayerTwoMode)
+                    {
+                        error = OperationResult<Dictionary<string, object>>.Fail("InvalidLayerType",
+                            $"Layer '{name}' is a 2-mode layer. Community detection requires 1-mode layers — use projecttwomodetoonemode() first.");
+                        return false;
+                    }
+                    if (lr.Value is ILayerOneMode lom) oneModes.Add(lom);
+                }
+            }
+            if (oneModes.Count == 0)
+            {
+                error = OperationResult<Dictionary<string, object>>.Fail("NoLayers", "No 1-mode layers found.");
+                return false;
+            }
+            error = null;
+            return true;
+        }
+
+        /// <summary>Default attribute name for community detection results, shared across methods.</summary>
+        private static string ResolveCommunityAttrName(string[]? layerNames, string? attrName)
+        {
+            if (!string.IsNullOrEmpty(attrName)) return attrName;
+            string layerTag = layerNames?.Length == 1 ? layerNames[0] + "_" : (layerNames == null ? "" : "multilayer_");
+            return layerTag + "community";
+        }
+
+        /// <summary>
+        /// Writes the community index as an int node attribute and builds the standard
+        /// NbrCommunities/CommunitySizes/Modularity/NumRestarts summary shared by every community
+        /// detection method.
+        /// </summary>
+        private static OperationResult<Dictionary<string, object>> StoreCommunityResult(Network network, string attrName, Dictionary<uint, int> communities, double modularity, int numRestarts = 1)
+        {
+            var attrDict = communities.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToString());
+            var setResult = network.Nodeset.DefineAndSetNodeAttributeValues(attrName, attrDict, NodeAttributeType.Int);
+            if (!setResult.Success)
+                return OperationResult<Dictionary<string, object>>.Fail(setResult);
+
+            int nbrCommunities = communities.Count > 0 ? communities.Values.Max() + 1 : 0;
+            int[] communitySizes = new int[nbrCommunities];
+            foreach (int c in communities.Values) communitySizes[c]++;
+
+            var result = new Dictionary<string, object>
+            {
+                ["NbrCommunities"] = nbrCommunities,
+                ["CommunitySizes"] = communitySizes.OrderByDescending(s => s).ToList(),
+                ["Modularity"] = modularity,
+                // The underlying detection methods treat numRestarts <= 1 as "run exactly once",
+                // so report that actual run count rather than a caller-supplied 0 or negative
+                // value verbatim.
+                ["NumRestarts"] = Math.Max(numRestarts, 1)
+            };
+            return OperationResult<Dictionary<string, object>>.Ok(result);
         }
         #endregion
     }

@@ -380,6 +380,14 @@ namespace Threadle.Core.Model
                 yield return (name, [.. hyperedge.NodeIds]);
         }
 
+        public IEnumerable<(string hypername, ReadOnlyMemory<uint> nodeIds)> GetNodeHyperedgesWithMembers(uint nodeId)
+        {
+            if (GetNonEmptyHyperedgeCollection(nodeId) is not HyperedgeCollection collection)
+                yield break;
+            foreach (Hyperedge hyperedge in collection.HyperEdges)
+                yield return (hyperedge.Name, hyperedge.NodeIds.ToArray());
+        }
+
         public string[] GetNodeHyperedgeNames(uint nodeId)
         {
             if (!HyperEdgeCollections.TryGetValue(nodeId, out var hyperedgeCollection))
@@ -388,7 +396,7 @@ namespace Threadle.Core.Model
         }
 
         public long GetEstimatedBytes()
-        {            
+        {
             int H = _allHyperedges.Count;
             int N = _hyperedgeCollections.Count;
             long nbrAffs = NbrAffiliations;
@@ -544,6 +552,20 @@ namespace Threadle.Core.Model
             }
             AddHyperEdgeToNode(nodeId, hyperedge);
             hyperedge.AddNode(nodeId);
+        }
+
+        /// <summary>
+        /// Goes through all Hyperedges in the layer and removes any duplicate node ids from their
+        /// membership lists. Used after import, where it is more likely to encounter a duplicate
+        /// node-affiliation entry (e.g. the same row appearing twice in a source file, or several
+        /// repeated node ids within one hyperedge's member list) since the fast, unchecked
+        /// _addHyperedge()/_addAffiliation() paths used by importers trust the data as given.
+        /// Mirrors LayerOneMode._deduplicateEdgesets() for the 2-mode case.
+        /// </summary>
+        internal void _deduplicateHyperedges()
+        {
+            foreach (Hyperedge hyperedge in AllHyperEdges.Values)
+                Misc.DeduplicateUintList(hyperedge.NodeIds);
         }
 
         /// <summary>

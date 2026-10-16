@@ -94,7 +94,19 @@ namespace Threadle.Core.Model
                 ulong nbrConnections = 0;
                 foreach ((uint nodeId, IEdgeset edgeset) in Edgesets)
                     nbrConnections += edgeset.NbrEdges;
-                return Directionality == EdgeDirectionality.Directed ? nbrConnections : nbrConnections / 2;
+                if (Directionality == EdgeDirectionality.Directed)
+                    return nbrConnections;
+
+                // Undirected: an ordinary edge is stored once per endpoint (so divide the total by
+                // 2), but a self-loop is stored only once overall (on its one node), so it must not
+                // be halved along with everything else.
+                if (!Selfties)
+                    return nbrConnections / 2;
+                ulong selfLoopCount = 0;
+                foreach ((uint nodeId, IEdgeset edgeset) in Edgesets)
+                    if (edgeset.CheckOutboundPartnerEdgeExists(nodeId))
+                        selfLoopCount++;
+                return (nbrConnections - selfLoopCount) / 2 + selfLoopCount;
             }
         }
 
@@ -148,6 +160,15 @@ namespace Threadle.Core.Model
                     layer._addBinaryEdges(egoId, alters.ToArray());
                 }
             }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly, once
+            // each, via _addEdge (which correctly guards against double-adding a tie whose two
+            // endpoints are the same node, unlike _addBinaryEdges/_addValuedEdges above).
+            if (source.IsSymmetric && source.Selfties)
+                foreach (uint nodeId in source.NodeIds)
+                    if (source.CheckEdgeExists(nodeId, nodeId))
+                        layer._addEdge(nodeId, nodeId, source.GetEdgeValue(nodeId, nodeId));
+
             return layer;
         }
 
@@ -276,9 +297,29 @@ namespace Threadle.Core.Model
         {
             List<Dictionary<string, object>> edges = [];
             int skipped = 0;
+            bool includeSelfties = IsSymmetric && Selfties;
             foreach (var kvp in _edgesets)
             {
                 uint egoId = kvp.Key;
+
+                // GetOutboundEdgesWithValues() never yields self-loops for symmetric layers
+                // (a self-loop has no "other side" alterId > egoId to be found via): add it
+                // explicitly, once, from the one edgeset it is stored in.
+                if (includeSelfties && CheckEdgeExists(egoId, egoId))
+                {
+                    if (skipped < offset)
+                        skipped++;
+                    else if (edges.Count < limit)
+                        edges.Add(new Dictionary<string, object>
+                        {
+                            ["node1"] = egoId,
+                            ["node2"] = egoId,
+                            ["value"] = GetEdgeValue(egoId, egoId)
+                        });
+                    else
+                        return edges;
+                }
+
                 foreach (var (alterId, value) in kvp.Value.GetOutboundEdgesWithValues(egoId))
                 {
                     if (skipped < offset)
@@ -359,6 +400,7 @@ namespace Threadle.Core.Model
         public List<string> GetNFirstEdges(int n = 10)
         {
             List<string> edges = new(n);
+            bool includeSelfties = IsSymmetric && Selfties;
             foreach (var kvp in _edgesets)
             {
                 uint egoNodeId = kvp.Key;
@@ -366,6 +408,20 @@ namespace Threadle.Core.Model
                 int remaining = n - edges.Count;
                 if (remaining <= 0)
                     break;
+
+                // FormatEdges() only finds the other side (partnerId > egoNodeId) of an
+                // ordinary undirected edge; a self-loop has no other side, so it is never
+                // reported by FormatEdges() and must be added explicitly here.
+                if (includeSelfties && CheckEdgeExists(egoNodeId, egoNodeId))
+                {
+                    edges.Add(IsBinary
+                        ? $"{egoNodeId} <-> {egoNodeId}"
+                        : $"{egoNodeId} <-> {egoNodeId} ({GetEdgeValue(egoNodeId, egoNodeId)})");
+                    remaining--;
+                    if (remaining <= 0)
+                        break;
+                }
+
                 List<string> edgeLines = edgeset.FormatEdges(egoNodeId, remaining);
                 edges.AddRange(edgeLines);
             }
@@ -524,7 +580,19 @@ namespace Threadle.Core.Model
         {
             if (!Edgesets.TryGetValue(node1Id, out var edgesetNode1) || !Edgesets.TryGetValue(node2Id, out var edgesetNode2))
                 return OperationResult.Fail("EdgeNotFound", $"No edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}' found.");
-            if (!edgesetNode1.RemoveOutboundEdge(node2Id).Success || !edgesetNode2.RemoveInboundEdge(node1Id).Success)
+
+            // A self-tie in a symmetric layer is stored once, in the single edgeset shared by
+            // both "sides" (node1Id == node2Id, so edgesetNode1 and edgesetNode2 are the same
+            // object): removing it via both RemoveOutboundEdge and RemoveInboundEdge would try
+            // to remove the same already-gone entry twice, misreporting failure on the second
+            // attempt even though the first one actually succeeded. Directed self-loops don't
+            // have this issue - they're stored in separate outbound/inbound lists - so only the
+            // symmetric case needs the single-call path.
+            bool removed = IsSymmetric && node1Id == node2Id
+                ? edgesetNode1.RemoveOutboundEdge(node2Id).Success
+                : edgesetNode1.RemoveOutboundEdge(node2Id).Success && edgesetNode2.RemoveInboundEdge(node1Id).Success;
+
+            if (!removed)
                 return OperationResult.Fail("EdgeNotFound", $"No edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}' found.");
             return OperationResult.Ok($"Removed edge {Misc.BetweenFromToText(Directionality, node1Id, node2Id)} in layer '{Name}'.");
         }

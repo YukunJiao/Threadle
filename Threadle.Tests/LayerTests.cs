@@ -643,6 +643,80 @@ public class LayerTests
     }
 
     [Fact]
+    public void OneModeLayer_SymmetricSelftie_RemoveEdge_ReportsSuccess()
+    {
+        // A self-tie on a symmetric layer is stored once, in the single edgeset shared
+        // by both "sides" of (node1Id == node2Id): removing it must not be treated as
+        // two separate removals (outbound then inbound), which would misreport failure
+        // on the second, already-gone attempt even though the tie was actually removed.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+
+        var result = net.RemoveEdge("friends", 1, 1);
+
+        Assert.True(result.Success);
+        Assert.False(net.Layers["friends"].CheckEdgeExists(1, 1));
+    }
+
+    [Fact]
+    public void OneModeLayer_SymmetricSelftie_Packed_GetAllEdges_IncludesSelftie()
+    {
+        // LayerOneModeStatic.GetAllEdges/GetNFirstEdges dedupe ordinary undirected edges by
+        // only keeping the side where alterId > egoId. A self-loop has alterId == egoId, which
+        // must still be kept (it has no "other side" to dedupe against) - unlike the raw
+        // NbrEdges/GetEdgeValue/CheckEdgeExists on the same layer, which already got this right.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 1, 2);
+        net.Pack("friends");
+
+        var result = net.GetAllEdges("friends");
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Value!, e => (uint)e["node1"] == 1 && (uint)e["node2"] == 1);
+        Assert.Equal(2, result.Value!.Count); // self-tie (1,1) and (1,2)
+    }
+
+    [Fact]
+    public void OneModeLayer_SymmetricSelftie_Dynamic_GetAllEdges_IncludesSelftie()
+    {
+        // Same bug as the packed/static case above, but in the dynamic layer: GetAllEdges()
+        // there builds its output purely from GetOutboundEdgesWithValues(), which by design
+        // never yields self-loops (they have no "other side" partnerId > egoId) - so without
+        // explicit compensation, the self-tie silently never appears.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 1, 2);
+
+        var result = net.GetAllEdges("friends");
+
+        Assert.True(result.Success);
+        Assert.Contains(result.Value!, e => (uint)e["node1"] == 1 && (uint)e["node2"] == 1);
+        Assert.Equal(2, result.Value!.Count); // self-tie (1,1) and (1,2)
+    }
+
+    [Fact]
+    public void OneModeLayer_SymmetricSelftie_Dynamic_GetNFirstEdges_IncludesSelftie()
+    {
+        // Same underlying gap as GetAllEdges, but for the preview()-backing method: FormatEdges()
+        // on the edgeset also never reports a self-loop, so GetNFirstEdges() must compensate too.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true); // selfties=true
+        net.AddEdge("friends", 1, 1);
+
+        List<string> preview = net.Layers["friends"].GetNFirstEdges(10);
+
+        Assert.Contains(preview, line => line.Contains("1 <-> 1"));
+    }
+
+    [Fact]
     public void TwoModeLayer_PackedAndDynamic_GetHyperedgeNodeIds_Identical()
     {
         var ns = MakeNodeset();
@@ -666,6 +740,24 @@ public class LayerTests
             var pakNodes = pak2.GetHyperedgeNodeIds(clubName).Order().ToArray();
             Assert.Equal(dynNodes, pakNodes);
         }
+    }
+
+    [Fact]
+    public void LayerTwoModeStatic_FromHyperedgeRows_DuplicateNodeIdInRow_DoesNotInflateSharedCount()
+    {
+        // FromHyperedgeRows is the raw import path used e.g. by the .bin deserializer, which
+        // trusts node-id arrays as given. A duplicate node id within one row must not be added
+        // to that hyperedge's membership twice, or GetEdgeValue/CheckEdgeExists for that node
+        // would overcount how many hyperedges it shares with a co-member.
+        var rows = new List<(string hyperName, uint[] nodeIds)>
+        {
+            ("club1", new uint[] { 7, 7, 9 }) // node 7 listed twice
+        };
+
+        var layer = LayerTwoModeStatic.FromHyperedgeRows("layer", rows);
+
+        Assert.Equal(1f, layer.GetEdgeValue(7, 9));
+        Assert.True(layer.CheckEdgeExists(7, 9));
     }
 
     [Fact]
@@ -755,6 +847,56 @@ public class LayerTests
         net.Unpack("friends");
 
         Assert.Equal(edgesBefore, ((ILayerOneMode)net.Layers["friends"]).NbrEdges);
+    }
+
+    [Fact]
+    public void NbrEdges_SelfLoopInUndirectedLayer_CountsAsOneNotHalved()
+    {
+        // NbrEdges halves the total raw connection count for undirected layers (each ordinary
+        // edge is stored once per endpoint), but a self-loop is stored only once overall - it
+        // must contribute 1 to NbrEdges, not be halved away to 0.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        Assert.Equal(2UL, ((ILayerOneMode)net.Layers["friends"]).NbrEdges);
+    }
+
+    [Fact]
+    public void NbrEdges_SelfLoopInUndirectedLayer_SameForPackedAndDynamic()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+        net.AddEdge("friends", 3, 3);
+
+        ulong dynamicCount = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+        net.Pack("friends");
+        ulong packedCount = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+
+        Assert.Equal(3UL, dynamicCount);
+        Assert.Equal(3UL, packedCount);
+    }
+
+    [Fact]
+    public void Unpack_UndirectedBinaryLayerWithSelfLoop_EdgeCountUnchanged()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        ulong edgesBefore = ((ILayerOneMode)net.Layers["friends"]).NbrEdges;
+        net.Pack("friends");
+        net.Unpack("friends");
+
+        Assert.Equal(edgesBefore, ((ILayerOneMode)net.Layers["friends"]).NbrEdges);
+        Assert.True(net.Layers["friends"].CheckEdgeExists(1, 1));
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Utilities;
+using Threadle.Core.Utilities.Enums;
 
 namespace Threadle.Tests;
 
@@ -134,6 +135,50 @@ public class FileIOTests : IDisposable
             Assert.Contains(id, loaded.NodeIdArray);
     }
 
+    // ── File format detection by filename ──────────────────────────────────────
+    // Misc.GetFileEnding() must find the real extension after the LAST dot (via
+    // Path.GetExtension), not the first - a filename with extra dots before its real
+    // extension must not be misread as an unsupported format.
+
+    [Fact]
+    public void SaveLoadNodeset_Tsv_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.tsv");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
+    [Fact]
+    public void SaveLoadNodeset_TsvGz_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.tsv.gz");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
+    [Fact]
+    public void SaveLoadNodeset_Bin_FilenameWithMultipleDots_Succeeds()
+    {
+        var ns = MakeNodeset();
+        string path = TempFile(".v1.2.bin");
+
+        var saveResult = FileManager.Save(ns, path);
+        Assert.True(saveResult.Success);
+
+        var loadResult = FileManager.Load(path, "nodeset");
+        Assert.True(loadResult.Success);
+    }
+
     // ── Nodeset attributes round-trip (TSV) ────────────────────────────────────
 
     [Fact]
@@ -243,6 +288,32 @@ public class FileIOTests : IDisposable
 
         var (navActive, tActive) = loaded.GetNodeAttribute(1, "active").Value;
         Assert.True((bool)navActive.GetValue(tActive));
+    }
+
+    [Fact]
+    public void LoadNodeset_Tsv_RowWithMoreColumnsThanHeader_HandledGracefully()
+    {
+        // ReadNodesetFromFile's header defines nbrCols columns (id + nbrCols-1 attributes), so
+        // attributeNames has nbrCols-1 entries. A data row with MORE tab-separated fields than
+        // the header - e.g. a stray extra tab - must not crash by indexing past attributeNames;
+        // the extra column is simply ignored and the rest of the row loads normally.
+        string path = TempFile(".tsv");
+        File.WriteAllLines(path, new[]
+        {
+            "test-ns\tage:Int",
+            "1\t30\textra",
+            "2\t40"
+        });
+
+        var loadResult = FileManager.Load(path, "nodeset");
+
+        Assert.True(loadResult.Success);
+        var loaded = (Nodeset)loadResult.Value!.MainStructure;
+        Assert.Equal(2, loaded.NodeIdArray.Length);
+        var (nav1, type1) = loaded.GetNodeAttribute(1, "age").Value;
+        Assert.Equal(30, (int)nav1.GetValue(type1));
+        var (nav2, type2) = loaded.GetNodeAttribute(2, "age").Value;
+        Assert.Equal(40, (int)nav2.GetValue(type2));
     }
 
     // ── Attributes round-trip (BIN) ────────────────────────────────────────────
@@ -404,6 +475,26 @@ public class FileIOTests : IDisposable
         Assert.True(edgeCheck.Value);
     }
 
+    [Fact]
+    public void SaveLoadNetwork_Tsv_SelfLoopInUndirectedLayer_IsPreserved()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".tsv");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".tsv");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network").Value!.MainStructure;
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+    }
+
     // ── Network save/load (BIN) ────────────────────────────────────────────────
 
     [Fact]
@@ -530,6 +621,133 @@ public class FileIOTests : IDisposable
         Assert.True(loadedNet.CheckEdgeExists("follows", 3, 4).Value);
         Assert.False(loadedNet.CheckEdgeExists("follows", 4, 3).Value);  // directed
         Assert.Equal(0.8f, loadedNet.GetEdge("trust", 1, 3).Value, precision: 4);
+    }
+
+    // ── Binary network: self-loops in undirected layers ───────────────────────
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedLayer_PreservedUnpacked()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.False(loadedNet.Layers["friends"].IsStatic);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedLayer_PreservedPacked()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: true).Value!.MainStructure;
+
+        Assert.True(loadedNet.Layers["friends"].IsStatic);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 2).Value);
+        Assert.True(loadedNet.CheckEdgeExists("friends", 1, 1).Value);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_SelfLoopInUndirectedValuedLayer_ValuePreserved()
+    {
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 7.5f);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+        Assert.Equal(7.5f, loadedNet.GetEdge("trust", 1, 1).Value, precision: 4);
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Bin_NodeWithOnlySelfLoop_StillHasExactlyOneEdgeNotTwo()
+    {
+        // A node whose only tie is a self-loop is invisible to GetAllEgoData() entirely for
+        // symmetric layers; this also exercises the half-adjacency expansion guard in
+        // LayerOneModeStatic.FromBinaryNodelistRows, which must add a self-loop row only once.
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".bin");
+        FileManager.Save(ns, nsPath);
+
+        var net = new Network("test-net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 1);
+
+        string netPath = TempFile(".bin");
+        FileManager.Save(net, netPath);
+
+        var loadedNetPacked = (Network)FileManager.Load(netPath, "network", packLayers: true).Value!.MainStructure;
+        Assert.True(loadedNetPacked.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.Equal(1UL, ((ILayerOneMode)loadedNetPacked.Layers["friends"]).NbrEdges);
+        // Guards against LayerOneModeStatic.FromBinaryNodelistRows double-adding a self-loop
+        // while expanding half-adjacency to full-adjacency: node 1 must list itself exactly once.
+        Assert.Equal(new uint[] { 1 }, ((ILayerOneMode)loadedNetPacked.Layers["friends"]).GetNodeAlters(1, EdgeTraversal.Out));
+
+        var loadedNetUnpacked = (Network)FileManager.Load(netPath, "network", packLayers: false).Value!.MainStructure;
+        Assert.True(loadedNetUnpacked.CheckEdgeExists("friends", 1, 1).Value);
+        Assert.Equal(1UL, ((ILayerOneMode)loadedNetUnpacked.Layers["friends"]).NbrEdges);
+        Assert.Equal(new uint[] { 1 }, ((ILayerOneMode)loadedNetUnpacked.Layers["friends"]).GetNodeAlters(1, EdgeTraversal.Out));
+    }
+
+    [Fact]
+    public void SaveLoadNetwork_Tsv_TwoMode_DuplicateNodeIdAndBadToken_HandledGracefully()
+    {
+        // A hand-written network tsv file, simulating a hyperedge row with a repeated node id
+        // (e.g. a duplicate source row) and one unparseable token (e.g. a stray non-numeric
+        // value). Neither should wipe the whole row's membership, and the duplicate must
+        // collapse to a single membership.
+        var ns = MakeNodeset();
+        string nsPath = TempFile(".tsv");
+        FileManager.Save(ns, nsPath);
+
+        string netPath = TempFile(".tsv");
+        File.WriteAllLines(netPath, new[]
+        {
+            "Name: test-net",
+            $"NodesetFile: {Path.GetFileName(nsPath)}",
+            "",
+            "# Layer",
+            "LayerMode: 2",
+            "LayerName: clubs",
+            "chess\t1\t1\t2\tabc\t3"
+        });
+
+        var loadedNet = (Network)FileManager.Load(netPath, "network").Value!.MainStructure;
+
+        var chess = loadedNet.GetHyperedgeNodes("clubs", "chess");
+        Assert.True(chess.Success);
+        Assert.Equal(3, chess.Value!.Length);
+        Assert.Contains(1u, chess.Value);
+        Assert.Contains(2u, chess.Value);
+        Assert.Contains(3u, chess.Value);
     }
 
     // ── Binary network: 2-mode layer ──────────────────────────────────────────
@@ -982,6 +1200,25 @@ public class FileIOTests : IDisposable
     }
 
     [Fact]
+    public void ExportLayerEdgelist_UndirectedBinaryWithSelfLoop_IncludesSelfLoopRow()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(2, lines.Length);
+        Assert.Contains(lines, l => l == "1,2");
+        Assert.Contains(lines, l => l == "1,1");
+    }
+
+    [Fact]
     public void ExportLayerEdgelist_StaticOneModeValued_WritesThreeColumns()
     {
         var ns = MakeNodeset();
@@ -1072,6 +1309,178 @@ public class FileIOTests : IDisposable
         var linesDyn = File.ReadAllLines(pathDyn).OrderBy(x => x).ToArray();
         var linesPacked = File.ReadAllLines(pathPacked).OrderBy(x => x).ToArray();
         Assert.Equal(linesDyn, linesPacked);
+    }
+
+    // ── Export edgelist/matrix: labelattr ─────────────────────────────────────
+
+    [Fact]
+    public void ExportLayerEdgelist_LabelAttr_WritesLabelsInsteadOfIds()
+    {
+        var ns = MakeNodeset();
+        ns.DefineNodeAttribute("label", "string");
+        ns.SetNodeAttribute(1, "label", "alice");
+        ns.SetNodeAttribute(2, "label", "bob");
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns, "label");
+
+        Assert.True(result.Success);
+        Assert.Equal("alice,bob", File.ReadAllLines(path).Single());
+    }
+
+    [Fact]
+    public void ExportLayerEdgelist_LabelAttr_NodeWithoutValue_FallsBackToNumericId()
+    {
+        // Node 2 has no "label" value: should fall back to its numeric id, not fail the export.
+        var ns = MakeNodeset();
+        ns.DefineNodeAttribute("label", "string");
+        ns.SetNodeAttribute(1, "label", "alice");
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns, "label");
+
+        Assert.True(result.Success);
+        Assert.Equal("alice,2", File.ReadAllLines(path).Single());
+    }
+
+    [Fact]
+    public void ExportLayerEdgelist_LabelAttr_NonStringType_IsAllowed()
+    {
+        // labelattr is not required to be a string attribute, nor to hold unique values.
+        var ns = MakeNodeset();
+        ns.DefineNodeAttribute("code", "int");
+        ns.SetNodeAttribute(1, "code", "100");
+        ns.SetNodeAttribute(2, "code", "100"); // duplicate value: not enforced/checked
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns, "code");
+
+        Assert.True(result.Success);
+        Assert.Equal("100,100", File.ReadAllLines(path).Single());
+    }
+
+    [Fact]
+    public void ExportLayerEdgelist_LabelAttr_UnknownAttribute_Fails()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerEdgelist(net.Layers["friends"], path, ',', false, ns, "ghost");
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_LabelAttr_WritesLabelsInHeaderAndRows()
+    {
+        var ns = MakeNodeset();
+        ns.DefineNodeAttribute("label", "string");
+        ns.SetNodeAttribute(1, "label", "alice");
+        ns.SetNodeAttribute(2, "label", "bob");
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true, ns, "label");
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(",alice,bob", lines[0]);
+        Assert.Equal("alice,0,1", lines[1]);
+        Assert.Equal("bob,1,0", lines[2]);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_OneMode_WritesCorrectSquareMatrix()
+    {
+        // Regression test for a bug where the matrix was (re)written once per ego node
+        // (nested inside the data-gathering loop) instead of once after it: functionally
+        // harmless on the final write, but this pins down the correct, final output shape.
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 2, 3);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(4, lines.Length); // header + 3 nodes
+        Assert.Equal(",1,2,3", lines[0]);
+        Assert.Equal("1,0,1,0", lines[1]);
+        Assert.Equal("2,1,0,1", lines[2]);
+        Assert.Equal("3,0,1,0", lines[3]);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_UndirectedBinaryWithSelfLoop_DiagonalPopulated()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(",1,2", lines[0]);
+        Assert.Equal("1,1,1", lines[1]); // diagonal self-loop, plus the tie to node 2
+        Assert.Equal("2,1,0", lines[2]);
+    }
+
+    [Fact]
+    public void ExportLayerMatrix_NodeWithOnlySelfLoop_AppearsAsRowAndColumn()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".csv");
+        var result = FileManager.ExportLayerMatrix(net.Layers["friends"], path, ',', true, ns);
+
+        Assert.True(result.Success);
+        var lines = File.ReadAllLines(path);
+        Assert.Equal(",1", lines[0]);
+        Assert.Equal("1,1", lines[1]);
+    }
+
+    // ── GEXF export ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ExportGexf_UndirectedBinaryWithSelfLoop_IncludesSelfLoopEdge()
+    {
+        var ns = MakeNodeset();
+        var net = new Network("net", ns);
+        net.AddLayerOneMode("friends", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("friends", 1, 2);
+        net.AddEdge("friends", 1, 1);
+
+        string path = TempFile(".gexf");
+        var result = FileManager.ExportNetworkToFile(net, ExportFormat.Gexf, "friends", path);
+
+        Assert.True(result.Success);
+        string content = File.ReadAllText(path);
+        Assert.Contains("source=\"1\" target=\"2\"", content);
+        Assert.Contains("source=\"1\" target=\"1\"", content);
     }
 
     // ── Layer count > 255 (version 2 binary format) ───────────────────────────
@@ -1227,9 +1636,9 @@ public class FileIOTests : IDisposable
         FileManager.Save(ns, path);
         var loaded = (Nodeset)FileManager.Load(path, "nodeset").Value!.MainStructure;
 
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", loaded.GetNodeAttributeString(2u, "occupation").Value);
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(3u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(3u, "occupation").Value);
     }
 
     [Fact]
@@ -1283,7 +1692,7 @@ public class FileIOTests : IDisposable
         FileManager.Save(ns, path);
         var loaded = (Nodeset)FileManager.Load(path, "nodeset").Value!.MainStructure;
 
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", loaded.GetNodeAttributeString(2u, "occupation").Value);
         var age1 = loaded.GetNodeAttribute(1u, "age");
         Assert.Equal(45, (int)age1.Value.Value.GetValue(NodeAttributeType.Int)!);
@@ -1305,9 +1714,9 @@ public class FileIOTests : IDisposable
         FileManager.Save(ns, path);
         var loaded = (Nodeset)FileManager.Load(path, "nodeset").Value!.MainStructure;
 
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", loaded.GetNodeAttributeString(2u, "occupation").Value);
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(3u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(3u, "occupation").Value);
     }
 
     [Fact]
@@ -1362,7 +1771,7 @@ public class FileIOTests : IDisposable
         FileManager.Save(ns, path);
         var loaded = (Nodeset)FileManager.Load(path, "nodeset").Value!.MainStructure;
 
-        Assert.Equal("doctor",   loaded.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", loaded.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", loaded.GetNodeAttributeString(2u, "occupation").Value);
         var active1 = loaded.GetNodeAttribute(1u, "active");
         Assert.Equal(true, (bool)active1.Value.Value.GetValue(NodeAttributeType.Bool)!);

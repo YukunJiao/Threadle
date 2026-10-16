@@ -2,6 +2,7 @@ using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Processing;
 using Threadle.Core.Processing.Enums;
+using Threadle.Core.Utilities;
 
 namespace Threadle.Tests;
 
@@ -135,6 +136,84 @@ public class NodesetTests
     {
         var nodeset = new Nodeset("ns");
         Assert.Empty(nodeset.NodeIdArray);
+    }
+
+    // ── NodeIdArray cache invalidation (UserSettings.NodeCache) ───────────────────
+    // NodeIdArray caches its result (_nodeIdCache) when UserSettings.NodeCache is true
+    // (the default): every mutation that changes nodeset membership must invalidate that
+    // cache, or a prior read leaves NodeIdArray silently stale.
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_ReflectsNodeAddedAfterFirstRead()
+    {
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.AddNode(2);
+
+            Assert.Equal(2, nodeset.NodeIdArray.Length);
+            Assert.Contains(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
+    }
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_ReflectsNodeRemovedAfterFirstRead()
+    {
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            nodeset.AddNode(2);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.RemoveNode(2);
+
+            Assert.Equal(1, nodeset.NodeIdArray.Length);
+            Assert.DoesNotContain(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
+    }
+
+    [Fact]
+    public void NodeIdArray_WithCacheActive_UnaffectedByAttributeOnlyChanges()
+    {
+        // Setting/removing a node attribute moves a node between the "with" and "without
+        // attributes" internal buckets without changing nodeset membership, so it must not
+        // require (and must not break) cache correctness either.
+        bool original = UserSettings.NodeCache;
+        try
+        {
+            UserSettings.NodeCache = true;
+            var nodeset = new Nodeset("ns");
+            nodeset.AddNode(1);
+            nodeset.AddNode(2);
+            _ = nodeset.NodeIdArray; // populate the cache
+
+            nodeset.DefineNodeAttribute("age", "int");
+            nodeset.SetNodeAttribute(1, "age", "30");
+
+            Assert.Equal(2, nodeset.NodeIdArray.Length);
+            Assert.Contains(1u, nodeset.NodeIdArray);
+            Assert.Contains(2u, nodeset.NodeIdArray);
+        }
+        finally
+        {
+            UserSettings.NodeCache = original;
+        }
     }
 
     // ── GetNodeIdByIndex ─────────────────────────────────────────────────────────
@@ -314,6 +393,580 @@ public class NodesetTests
         nodeset.SetNodeAttribute(1, "age", "25");
         nodeset.UndefineNodeAttribute("age");
         Assert.Contains(1u, nodeset.NodeIdArray);
+    }
+
+    // ── RenameNodeAttribute ──────────────────────────────────────────────────
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_Succeeds()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "years");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_OldNameNoLongerLooksUpValue()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.RenameNodeAttribute("age", "years");
+
+        Assert.False(nodeset.GetNodeAttribute(1, "age").Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NewName_ValuePreservedUnderNewName()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.RenameNodeAttribute("age", "years");
+
+        var result = nodeset.GetNodeAttribute(1, "years");
+        Assert.True(result.Success);
+        Assert.Equal(30, result.Value.Value.GetValue(result.Value.Type));
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NonExistentAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        var result = nodeset.RenameNodeAttribute("ghost", "whatever");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_NameAlreadyExists_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.DefineNodeAttribute("years", "int");
+        var result = nodeset.RenameNodeAttribute("age", "years");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_SameName_SucceedsAsNoOp()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "age");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_EmptyNewName_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.RenameNodeAttribute("age", "");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RenameNodeAttribute_AfterRename_CanRedefineOldName()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.RenameNodeAttribute("age", "years");
+        var result = nodeset.DefineNodeAttribute("age", "string");
+        Assert.True(result.Success);
+    }
+
+    // ── ConvertNodeAttributeType ──────────────────────────────────────────────
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToInt_ValidValueConverts()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        var r = nodeset.GetNodeAttribute(1, "age_int");
+        Assert.True(r.Success);
+        Assert.Equal(30, (int)r.Value.Value.GetValue(r.Value.Type)!);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToInt_UnparseableValueIsSkippedNotFailed()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.SetNodeAttribute(2, "age", "NA");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(nodeset.GetNodeAttribute(1, "age_int").Success);
+        Assert.False(nodeset.GetNodeAttribute(2, "age_int").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToFloat_NaNConvertsAsRealValue()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("score", "string");
+        nodeset.SetNodeAttribute(1, "score", "NaN");
+
+        var result = nodeset.ConvertNodeAttributeType("score", "score_float", "float");
+
+        Assert.True(result.Success, result.Message);
+        var r = nodeset.GetNodeAttribute(1, "score_float");
+        Assert.True(r.Success);
+        Assert.True(float.IsNaN((float)r.Value.Value.GetValue(r.Value.Type)!));
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToBool_MismatchedStringIsSkipped()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("active", "string");
+        nodeset.SetNodeAttribute(1, "active", "true");
+        nodeset.SetNodeAttribute(2, "active", "yes"); // not "true"/"false"
+
+        var result = nodeset.ConvertNodeAttributeType("active", "active_bool", "bool");
+
+        Assert.True(result.Success, result.Message);
+        var r1 = nodeset.GetNodeAttribute(1, "active_bool");
+        Assert.True(r1.Success);
+        Assert.True((bool)r1.Value.Value.GetValue(r1.Value.Type)!);
+        Assert.False(nodeset.GetNodeAttribute(2, "active_bool").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_StringToChar_MultiCharStringIsSkipped()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("grade", "string");
+        nodeset.SetNodeAttribute(1, "grade", "A");
+        nodeset.SetNodeAttribute(2, "grade", "AB");
+
+        var result = nodeset.ConvertNodeAttributeType("grade", "grade_char", "char");
+
+        Assert.True(result.Success, result.Message);
+        var r1 = nodeset.GetNodeAttribute(1, "grade_char");
+        Assert.True(r1.Success);
+        Assert.Equal('A', (char)r1.Value.Value.GetValue(r1.Value.Type)!);
+        Assert.False(nodeset.GetNodeAttribute(2, "grade_char").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_IntToString_AlwaysSucceeds()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_str", "string");
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("30", nodeset.GetNodeAttributeString(1, "age_str").Value);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_NodeWithNoSourceValue_GetsNoTargetValueEither()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        // node 2 has no value for "age" at all
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.True(result.Success, result.Message);
+        Assert.False(nodeset.GetNodeAttribute(2, "age_int").Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_OriginalAttributeUnaffected()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.Equal("30", nodeset.GetNodeAttributeString(1, "age").Value);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_NonExistentSourceAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        var result = nodeset.ConvertNodeAttributeType("ghost", "whatever", "int");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_TargetNameAlreadyExists_FailsAndCreatesNothing()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "string");
+        nodeset.DefineNodeAttribute("age_int", "int");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "int");
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void ConvertNodeAttributeType_UnrecognizedTargetType_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "string");
+
+        var result = nodeset.ConvertNodeAttributeType("age", "age_int", "notatype");
+
+        Assert.False(result.Success);
+        Assert.False(nodeset.GetDefinedAttributeNames().Contains("age_int"));
+    }
+
+    // ── Merge ───────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Merge_NodeIds_UnionOfBoth()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.AddNode(2);
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(2);
+        ns2.AddNode(3);
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+        Assert.Equal(3, result.Value!.Count);
+        Assert.Contains(1u, result.Value!.NodeIdArray);
+        Assert.Contains(2u, result.Value!.NodeIdArray);
+        Assert.Contains(3u, result.Value!.NodeIdArray);
+    }
+
+    [Fact]
+    public void Merge_DisjointAttributes_BothPresentInResult()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("gender", "string");
+        ns1.SetNodeAttribute(1, "gender", "F");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("income2024", "int");
+        ns2.SetNodeAttribute(1, "income2024", "500");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+        Assert.Equal("F", result.Value!.GetNodeAttributeString(1, "gender").Value);
+        Assert.Equal(500, result.Value!.GetNodeAttribute(1, "income2024").Value.Value.GetValue(NodeAttributeType.Int));
+    }
+
+    [Fact]
+    public void Merge_AttributeTypeMismatch_Fails()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.DefineNodeAttribute("age", "int");
+        var ns2 = new Nodeset("ns2");
+        ns2.DefineNodeAttribute("age", "string");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Merge_ValueOnlyInOneSource_NoConflict()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("gender", "string");
+        ns1.SetNodeAttribute(1, "gender", "F");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("gender", "string");
+        // node 1 in ns2 has no value set for gender
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+        Assert.Equal("F", result.Value!.GetNodeAttributeString(1, "gender").Value);
+    }
+
+    [Fact]
+    public void Merge_BothSourcesAgree_NoConflict()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("birthyear", "int");
+        ns1.SetNodeAttribute(1, "birthyear", "1990");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("birthyear", "int");
+        ns2.SetNodeAttribute(1, "birthyear", "1990");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+        Assert.Equal(1990, result.Value!.GetNodeAttribute(1, "birthyear").Value.Value.GetValue(NodeAttributeType.Int));
+    }
+
+    [Fact]
+    public void Merge_ConflictingValues_DefaultFails()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("birthyear", "int");
+        ns1.SetNodeAttribute(1, "birthyear", "1990");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("birthyear", "int");
+        ns2.SetNodeAttribute(1, "birthyear", "1991");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Merge_ConflictingValues_KeepFirstUsesFirstSource()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("birthyear", "int");
+        ns1.SetNodeAttribute(1, "birthyear", "1990");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("birthyear", "int");
+        ns2.SetNodeAttribute(1, "birthyear", "1991");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged", AttributeConflictPolicy.KeepFirst);
+        Assert.True(result.Success);
+        Assert.Equal(1990, result.Value!.GetNodeAttribute(1, "birthyear").Value.Value.GetValue(NodeAttributeType.Int));
+    }
+
+    [Fact]
+    public void Merge_ConflictingValues_KeepLastUsesSecondSource()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("birthyear", "int");
+        ns1.SetNodeAttribute(1, "birthyear", "1990");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("birthyear", "int");
+        ns2.SetNodeAttribute(1, "birthyear", "1991");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged", AttributeConflictPolicy.KeepLast);
+        Assert.True(result.Success);
+        Assert.Equal(1991, result.Value!.GetNodeAttribute(1, "birthyear").Value.Value.GetValue(NodeAttributeType.Int));
+    }
+
+    [Fact]
+    public void Merge_ConflictingStringValues_KeepLastUsesSecondSourcesString()
+    {
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("city", "string");
+        ns1.SetNodeAttribute(1, "city", "Malmo");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("city", "string");
+        ns2.SetNodeAttribute(1, "city", "Lund");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged", AttributeConflictPolicy.KeepLast);
+        Assert.True(result.Success);
+        Assert.Equal("Lund", result.Value!.GetNodeAttributeString(1, "city").Value);
+    }
+
+    [Fact]
+    public void Merge_ResultHasGivenName()
+    {
+        var ns1 = new Nodeset("ns1");
+        var ns2 = new Nodeset("ns2");
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.Equal("merged", result.Value!.Name);
+    }
+
+    [Fact]
+    public void Merge_FloatZeroAndNegativeZero_AreNotAConflict()
+    {
+        // 0.0 and -0.0 have different bit patterns but are the same value: must not be flagged
+        // as a value conflict even under the default onvalueconflict='fail' policy.
+        var ns1 = new Nodeset("ns1");
+        ns1.AddNode(1);
+        ns1.DefineNodeAttribute("score", "float");
+        ns1.SetNodeAttribute(1, "score", "0.0");
+        var ns2 = new Nodeset("ns2");
+        ns2.AddNode(1);
+        ns2.DefineNodeAttribute("score", "float");
+        ns2.SetNodeAttribute(1, "score", "-0.0");
+
+        var result = Nodeset.Merge(ns1, ns2, "merged");
+        Assert.True(result.Success);
+    }
+
+    // ── DuplicateNodeAttribute ────────────────────────────────────────────────
+
+    [Fact]
+    public void DuplicateNodeAttribute_NewName_Succeeds()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.DuplicateNodeAttribute("age", "years");
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_OriginalAndCopyBothExist()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.DuplicateNodeAttribute("age", "years");
+
+        Assert.True(nodeset.GetNodeAttribute(1, "age").Success);
+        var result = nodeset.GetNodeAttribute(1, "years");
+        Assert.True(result.Success);
+        Assert.Equal(30, result.Value.Value.GetValue(result.Value.Type));
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_NodeWithoutValueSet_HasNoValueUnderNewNameEither()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.DuplicateNodeAttribute("age", "years");
+
+        Assert.False(nodeset.GetNodeAttribute(2, "years").Success);
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_EditingCopyDoesNotAffectOriginal()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.DuplicateNodeAttribute("age", "years");
+        nodeset.SetNodeAttribute(1, "years", "99");
+
+        var original = nodeset.GetNodeAttribute(1, "age");
+        Assert.Equal(30, original.Value.Value.GetValue(original.Value.Type));
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_NonExistentAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        var result = nodeset.DuplicateNodeAttribute("ghost", "whatever");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_NameAlreadyExists_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.DefineNodeAttribute("years", "int");
+        var result = nodeset.DuplicateNodeAttribute("age", "years");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_SameNameAsOriginal_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.DuplicateNodeAttribute("age", "age");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void DuplicateNodeAttribute_EmptyNewName_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.DefineNodeAttribute("age", "int");
+        var result = nodeset.DuplicateNodeAttribute("age", "");
+        Assert.False(result.Success);
+    }
+
+    // ── GetNodeAttributesTable ────────────────────────────────────────────────
+
+    [Fact]
+    public void GetNodeAttributesTable_SpecificAttributes_ReturnsOneColumnPerAttribute()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.DefineNodeAttribute("city", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+        nodeset.SetNodeAttribute(1, "city", "Malmo");
+        nodeset.SetNodeAttribute(2, "age", "40");
+
+        var result = nodeset.GetNodeAttributesTable([1, 2], ["age", "city"]);
+        Assert.True(result.Success);
+        Assert.Equal(30, result.Value!["age"][0]);
+        Assert.Equal(40, result.Value!["age"][1]);
+        Assert.Equal("Malmo", result.Value!["city"][0]);
+        Assert.Null(result.Value!["city"][1]);
+    }
+
+    [Fact]
+    public void GetNodeAttributesTable_NoAttrNames_IncludesAllDefinedAttributes()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.DefineNodeAttribute("city", "string");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.GetNodeAttributesTable([1], null);
+        Assert.True(result.Success);
+        Assert.True(result.Value!.ContainsKey("age"));
+        Assert.True(result.Value!.ContainsKey("city"));
+    }
+
+    [Fact]
+    public void GetNodeAttributesTable_NonExistentNode_ReturnsNullsNotFailure()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.DefineNodeAttribute("age", "int");
+        nodeset.SetNodeAttribute(1, "age", "30");
+
+        var result = nodeset.GetNodeAttributesTable([1, 999], ["age"]);
+        Assert.True(result.Success);
+        Assert.Equal(30, result.Value!["age"][0]);
+        Assert.Null(result.Value!["age"][1]);
+    }
+
+    [Fact]
+    public void GetNodeAttributesTable_UnknownAttribute_Fails()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        var result = nodeset.GetNodeAttributesTable([1], ["ghost"]);
+        Assert.False(result.Success);
     }
 
     // ── SetNodeAttribute ─────────────────────────────────────────────────────
@@ -854,7 +1507,7 @@ public class NodesetTests
         var yAttr = clone.GetNodeAttribute(1, "y");
         Assert.True(xAttr.Success);
         Assert.True(yAttr.Success);
-        Assert.Equal(5,    (int)xAttr.Value.Value.GetValue(xAttr.Value.Type)!);
+        Assert.Equal(5, (int)xAttr.Value.Value.GetValue(xAttr.Value.Type)!);
         Assert.Equal(1.5f, (float)yAttr.Value.Value.GetValue(yAttr.Value.Type)!, 4);
     }
 
@@ -899,9 +1552,9 @@ public class NodesetTests
         ns.SetNodeAttribute(1u, "occupation", "doctor");
         ns.SetNodeAttribute(2u, "occupation", "engineer");
         ns.SetNodeAttribute(3u, "occupation", "doctor");
-        Assert.Equal("doctor",   ns.GetNodeAttributeString(1u, "occupation").Value);
+        Assert.Equal("doctor", ns.GetNodeAttributeString(1u, "occupation").Value);
         Assert.Equal("engineer", ns.GetNodeAttributeString(2u, "occupation").Value);
-        Assert.Equal("doctor",   ns.GetNodeAttributeString(3u, "occupation").Value);
+        Assert.Equal("doctor", ns.GetNodeAttributeString(3u, "occupation").Value);
     }
 
     [Fact]

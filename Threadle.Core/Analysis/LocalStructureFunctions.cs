@@ -1,0 +1,512 @@
+﻿using Threadle.Core.Model;
+using Threadle.Core.Model.Enums;
+using Threadle.Core.Utilities;
+
+namespace Threadle.Core.Analysis
+{
+    /// <summary>
+    /// Internal functions for local structural metrics: clustering coefficients and global transitivity.
+    /// </summary>
+    internal static class LocalStructureFunctions
+    {
+        #region Methods (internal)
+
+        /// <summary>
+        /// Computes Burt's (1992/2004) constraint and effective size for all nodes simultaneously.
+        /// Weights are symmetrized across all specified 1-mode layers:
+        ///   directed layers  → w_sym(u,v) = w_uv + w_vu  (accumulated from GetAllEgoData arcs)
+        ///   undirected layers → w_sym(u,v) = w_uv         (each edge listed once; added to both ends)
+        /// Returns (constraint, effectiveSize) dictionaries keyed by node id. The per-ego O(k²)
+        /// computation is independent across nodes once symW/strength are built, so it runs in
+        /// parallel across up to 'maxthreads' threads (see 'setting()').
+        /// Reference: Burt (1992) Structural Holes; Burt (2004) doi:10.1086/421787.
+        /// </summary>
+        internal static (Dictionary<uint, double> constraint, Dictionary<uint, double> effectiveSize)
+            StructuralHoles(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            int n = nodeIds.Length;
+            var constraint = new Dictionary<uint, double>(n);
+            var effectiveSize = new Dictionary<uint, double>(n);
+
+            if (n == 0 || layers.Count == 0)
+            {
+                foreach (uint u in nodeIds) { constraint[u] = 0.0; effectiveSize[u] = 0.0; }
+                return (constraint, effectiveSize);
+            }
+
+            // Build symmetric weight dictionaries: symW[u][v] = symmetrized tie strength.
+            // GetAllEgoData yields each edge/arc once from the source ego.
+            // Adding w to both symW[u][v] and symW[v][u] symmetrizes naturally:
+            //   undirected: edge (u,v) listed once → symW[u][v] = symW[v][u] = w  ✓
+            //   directed:   arc u→v contributes w; arc v→u contributes w separately → sum ✓
+            var symW = new Dictionary<uint, Dictionary<uint, double>>(n);
+            foreach (uint u in nodeIds) symW[u] = new Dictionary<uint, double>();
+
+            foreach (var layer in layers)
+            {
+                foreach (var (egoId, alters, values) in layer.GetAllEgoData())
+                {
+                    if (!symW.TryGetValue(egoId, out var egoDict)) continue;
+                    var aSpan = alters.Span;
+                    var wSpan = values.Span;
+                    bool hasWeights = wSpan.Length > 0;
+                    for (int i = 0; i < aSpan.Length; i++)
+                    {
+                        uint v = aSpan[i];
+                        double w = hasWeights ? wSpan[i] : 1.0;
+                        egoDict[v] = egoDict.GetValueOrDefault(v) + w;
+                        if (symW.TryGetValue(v, out var alterDict))
+                            alterDict[egoId] = alterDict.GetValueOrDefault(egoId) + w;
+                    }
+                }
+            }
+
+            // Total interaction volume (strength) per node
+            var strength = new Dictionary<uint, double>(n);
+            foreach (uint u in nodeIds)
+            {
+                double s = 0;
+                foreach (double w in symW[u].Values) s += w;
+                strength[u] = s;
+            }
+
+            // Per-ego computation — O(k²) inner loop. Independent per node (reads only the
+            // already-built, now-read-only symW/strength), so each node writes to its own
+            // pre-assigned array slot in parallel — no merge needed.
+            var constraintArr = new double[n];
+            var esArr = new double[n];
+
+            System.Threading.Tasks.Parallel.For(0, n, UserSettings.GetParallelOptions(), i =>
+            {
+                uint u = nodeIds[i];
+                var neighbors = symW[u];
+                int k = neighbors.Count;
+                double s_u = strength[u];
+
+                if (k == 0 || s_u == 0)
+                {
+                    constraintArr[i] = 0.0;
+                    esArr[i] = 0.0;
+                    return;
+                }
+
+                // Pre-compute ego's proportions p_uj = symW[u][j] / s_u
+                var p_u = new Dictionary<uint, double>(k);
+                foreach (var (j, w_uj) in neighbors)
+                    p_u[j] = w_uj / s_u;
+
+                double C_u = 0.0;
+                double ES_u = k;
+
+                foreach (var (j, _) in neighbors)
+                {
+                    double p_uj = p_u[j];
+                    // j's neighbor dictionary and total strength (for computing p_qj and p_jq)
+                    var symWj = symW.TryGetValue(j, out var jd) ? jd : null;
+                    double s_j = strength.GetValueOrDefault(j);
+
+                    // Constraint inner sum:  Σ_{q∈N(u), q≠j} p_uq · p_qj
+                    //   p_qj = symW[q][j] / strength[q]  (q's proportion invested in j)
+                    // Effective size inner term: p_uq · p_jq
+                    //   p_jq = symW[j][q] / strength[j]  (j's proportion invested in q)
+                    //   The full ES double-sum Σ_j Σ_{q≠j} p_uq·p_jq equals Burt's formula
+                    //   Σ_j Σ_{q≠j} p_uj·p_qj by a dummy-variable symmetry argument.
+                    double indirect = 0.0;
+                    foreach (var (q, _) in neighbors)
+                    {
+                        if (q == j) continue;
+                        double p_uq = p_u[q];
+                        double w = symWj != null ? symWj.GetValueOrDefault(q) : 0.0; // symW[j][q] = symW[q][j]
+
+                        // Effective size: use p_jq = w / s_j
+                        double p_jq = s_j > 0 ? w / s_j : 0.0;
+                        ES_u -= p_uq * p_jq;
+
+                        // Constraint: use p_qj = w / s_q  (different denominator)
+                        double s_q = strength.GetValueOrDefault(q);
+                        double p_qj = s_q > 0 ? w / s_q : 0.0;
+                        indirect += p_uq * p_qj;
+                    }
+
+                    double c_uj = p_uj + indirect;
+                    C_u += c_uj * c_uj;
+                }
+
+                constraintArr[i] = C_u;
+                esArr[i] = ES_u;
+            });
+
+            for (int i = 0; i < n; i++)
+            {
+                constraint[nodeIds[i]] = constraintArr[i];
+                effectiveSize[nodeIds[i]] = esArr[i];
+            }
+
+            return (constraint, effectiveSize);
+        }
+
+        /// <summary>
+        /// K-core decomposition (Batagelj & Zaversnik, 2003). Returns the coreness (k-shell index)
+        /// of each node: the highest k such that the node survives in the k-core.
+        /// Treats all edges as undirected (union of in/out neighbors) and ignores edge weights.
+        /// </summary>
+        internal static Dictionary<uint, int> Coreness(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            int n = nodeIds.Length;
+            if (n == 0 || layers.Count == 0) return new Dictionary<uint, int>(0);
+
+            var idx = new Dictionary<uint, int>(n);
+            for (int i = 0; i < n; i++) idx[nodeIds[i]] = i;
+
+            // Union of neighbors across all layers (both directions)
+            var neighborSets = new HashSet<int>[n];
+            for (int i = 0; i < n; i++) neighborSets[i] = new HashSet<int>();
+
+            foreach (var layer in layers)
+                foreach (uint u in nodeIds)
+                {
+                    int ui = idx[u];
+                    foreach (uint v in layer.GetNodeAlters(u, EdgeTraversal.Both))
+                        if (v != u && idx.TryGetValue(v, out int vi))
+                            neighborSets[ui].Add(vi);
+                }
+
+            int[][] adj = new int[n][];
+            int[] deg = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                adj[i] = neighborSets[i].Count > 0 ? neighborSets[i].ToArray() : Array.Empty<int>();
+                deg[i] = adj[i].Length;
+            }
+
+            int maxDeg = 0;
+            for (int i = 0; i < n; i++) if (deg[i] > maxDeg) maxDeg = deg[i];
+
+            int[] bin = new int[maxDeg + 1];
+            for (int i = 0; i < n; i++) bin[deg[i]]++;
+
+            int start = 0;
+            for (int d = 0; d <= maxDeg; d++) { int cnt = bin[d]; bin[d] = start; start += cnt; }
+
+            int[] vert = new int[n];
+            int[] pos = new int[n];
+            int[] tmp = (int[])bin.Clone();
+            for (int i = 0; i < n; i++) { pos[i] = tmp[deg[i]]; vert[pos[i]] = i; tmp[deg[i]]++; }
+
+            int[] core = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                int v = vert[i];
+                core[v] = deg[v];
+                foreach (int u in adj[v])
+                {
+                    if (deg[u] > deg[v])
+                    {
+                        int du = deg[u];
+                        int pu = pos[u];
+                        int pw = bin[du];
+                        int w = vert[pw];
+                        if (u != w) { pos[u] = pw; pos[w] = pu; vert[pw] = u; vert[pu] = w; }
+                        bin[du]++;
+                        deg[u]--;
+                    }
+                }
+            }
+
+            var result = new Dictionary<uint, int>(n);
+            for (int i = 0; i < n; i++) result[nodeIds[i]] = core[i];
+            return result;
+        }
+
+        /// <summary>
+        /// Dispatches to the correct clustering coefficient formula based on method (or auto-detects).
+        /// </summary>
+        internal static Dictionary<uint, double> ClusteringCoefficient(uint[] nodeIds, List<ILayerOneMode> layers, ClusteringMethod method)
+        {
+            if (method == ClusteringMethod.Auto)
+                method = DetectMethod(layers);
+
+            return method switch
+            {
+                ClusteringMethod.Fagiolo => ClusteringFagiolo(nodeIds, layers),
+                ClusteringMethod.Barrat => ClusteringBarrat(nodeIds, layers),
+                ClusteringMethod.Onnela => ClusteringOnnela(nodeIds, layers),
+                _ => ClusteringWattsStrogatz(nodeIds, layers),
+            };
+        }
+
+        /// <summary>
+        /// Global clustering coefficient (transitivity): Σ t(u) / Σ C(k(u),2),
+        /// treating all edges as undirected. Equals 3T / Σ C(k,2) where T is the
+        /// number of distinct triangles.
+        /// </summary>
+        internal static double Transitivity(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            double sumT = 0, sumP = 0;
+            foreach (uint u in nodeIds)
+            {
+                var N = CombinedNeighborSet(u, layers, EdgeTraversal.Both);
+                int k = N.Count;
+                if (k < 2)
+                    continue;
+                sumP += k * (k - 1) / 2.0;
+                sumT += CountClosedPairs(u, N, layers);
+            }
+            return sumP > 0 ? sumT / sumP : 0.0;
+        }
+
+        #endregion
+
+        #region Methods (private — per-formula)
+
+        internal static ClusteringMethod DetectMethod(List<ILayerOneMode> layers)
+        {
+            bool allSymmetric = layers.All(l => l.IsSymmetric);
+            bool anyValued = layers.Any(l => !l.IsBinary);
+            if (anyValued && allSymmetric)
+                return ClusteringMethod.Barrat;
+            if (!allSymmetric)
+                return ClusteringMethod.Fagiolo;
+            return ClusteringMethod.WattsStrogatz;
+        }
+
+        /// <summary>
+        /// Watts-Strogatz (1998): treats network as undirected.
+        /// C(u) = t(u) / C(k,2)  where t(u) = distinct edges among N(u).
+        /// </summary>
+        private static Dictionary<uint, double> ClusteringWattsStrogatz(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            return ComputePerNodeParallel(nodeIds, u =>
+            {
+                var N = CombinedNeighborSet(u, layers, EdgeTraversal.Both);
+                int k = N.Count;
+                if (k < 2) return 0.0;
+                double t = CountClosedPairs(u, N, layers);
+                return t / (k * (k - 1) / 2.0);
+            });
+        }
+
+        /// <summary>
+        /// Fagiolo (2007): directed clustering coefficient using symmetrized adjacency B = A + A^T.
+        /// B_{uv} ∈ {0,1,2}: 0=no tie, 1=one-way, 2=mutual.
+        /// t(u) = [Σ_j Σ_k B_uj * B_jk * B_ku] / 2
+        /// C(u) = t(u) / (d_tot * (d_tot - 1) - 2 * b)
+        /// where d_tot = k_in + k_out, b = reciprocal ties.
+        /// For undirected binary layers this reduces to the Watts-Strogatz formula.
+        /// </summary>
+        private static Dictionary<uint, double> ClusteringFagiolo(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            return ComputePerNodeParallel(nodeIds, u =>
+            {
+                var outN = CombinedNeighborSet(u, layers, EdgeTraversal.Out);
+                var inN = CombinedNeighborSet(u, layers, EdgeTraversal.In);
+                int d_tot = outN.Count + inN.Count;
+                if (d_tot < 2) return 0.0;
+
+                int b = 0;
+                foreach (uint v in outN) if (inN.Contains(v)) b++;
+
+                var N_sym = new HashSet<uint>(outN);
+                N_sym.UnionWith(inN);
+
+                // Precompute B_{u,v} for all v in N_sym (avoids repeated GetEdgeValue calls)
+                var b_u = new Dictionary<uint, double>(N_sym.Count);
+                foreach (uint v in N_sym)
+                    b_u[v] = SymWeight(u, v, layers);
+
+                double t = 0;
+                foreach (uint v in N_sym)
+                {
+                    double b_uv = b_u[v];
+                    // N_sym(v): all nodes reachable from v in either direction
+                    var N_sym_v = CombinedNeighborSet(v, layers, EdgeTraversal.Both);
+                    foreach (uint w in N_sym_v)
+                    {
+                        if (!N_sym.Contains(w)) continue;
+                        t += b_uv * SymWeight(v, w, layers) * b_u.GetValueOrDefault(w);
+                    }
+                }
+                t /= 2.0;  // Fagiolo's formula divides by 2
+
+                double denom = (double)d_tot * (d_tot - 1) - 2.0 * b;
+                return denom > 0 ? t / denom : 0.0;
+            });
+        }
+
+        /// <summary>
+        /// Barrat et al. (2004): weighted clustering for valued undirected networks.
+        /// Weights each closed triple by the mean edge weight of u's two edges to its triangle partners.
+        /// C_w(u) = Σ_{ordered (j,h) ∈ N(u), j-h connected} (w_uj + w_uh)/2  /  (s(u) * (k(u)-1))
+        /// where s(u) = node strength (sum of edge weights).
+        /// Denominator maximum = s(u)*(k(u)-1), so C_w ∈ [0,1].
+        /// </summary>
+        private static Dictionary<uint, double> ClusteringBarrat(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            return ComputePerNodeParallel(nodeIds, u =>
+            {
+                var N = CombinedNeighborSet(u, layers, EdgeTraversal.Out);
+                int k = N.Count;
+                if (k < 2) return 0.0;
+
+                var edgeWeights = CombinedEdgeWeights(u, layers, EdgeTraversal.Out);
+                double s_u = edgeWeights.Values.Sum();
+                if (s_u == 0) return 0.0;
+
+                // Sum over ordered pairs (j,h): both (j,h) and (h,j) are counted separately
+                double triW = 0;
+                foreach (uint v in N)
+                    foreach (var layer in layers)
+                        foreach (uint w in layer.GetNodeAlters(v, EdgeTraversal.Out))
+                            if (w != u && N.Contains(w))
+                                triW += (edgeWeights.GetValueOrDefault(v) +
+                                         edgeWeights.GetValueOrDefault(w)) / 2.0;
+                // No divide-by-2: Barrat sums over ordered (j,h) pairs
+                return triW / (s_u * (k - 1));
+            });
+        }
+
+        /// <summary>
+        /// Onnela et al. (2005): weighted clustering using geometric mean of all three triangle edge weights.
+        /// Weights are normalized by the global maximum weight across all specified layers.
+        /// C_O(u) = Σ_{ordered (j,h) ∈ N(u), j-h connected} (w̃_uj * w̃_uh * w̃_jh)^(1/3) / (k(u)*(k(u)-1))
+        /// where w̃_ij = w_ij / max(w).
+        /// </summary>
+        private static Dictionary<uint, double> ClusteringOnnela(uint[] nodeIds, List<ILayerOneMode> layers)
+        {
+            double maxW = MaxEdgeWeight(layers);
+            if (maxW == 0) maxW = 1;
+
+            return ComputePerNodeParallel(nodeIds, u =>
+            {
+                var N = CombinedNeighborSet(u, layers, EdgeTraversal.Out);
+                int k = N.Count;
+                if (k < 2) return 0.0;
+
+                var edgeWeights = CombinedEdgeWeights(u, layers, EdgeTraversal.Out);
+
+                // Sum over ordered pairs (j,h)
+                double t = 0;
+                foreach (uint v in N)
+                    foreach (var layer in layers)
+                        foreach (uint w in layer.GetNodeAlters(v, EdgeTraversal.Out))
+                            if (w != u && N.Contains(w))
+                            {
+                                double w_uv = edgeWeights.GetValueOrDefault(v) / maxW;
+                                double w_uw = edgeWeights.GetValueOrDefault(w) / maxW;
+                                double w_vw = CombinedEdgeWeight(v, w, layers) / maxW;
+                                t += Math.Pow(w_uv * w_uw * w_vw, 1.0 / 3.0);
+                            }
+                // No divide-by-2: Onnela sums over ordered (j,h) pairs
+                return t / ((double)k * (k - 1));
+            });
+        }
+
+        #endregion
+
+        #region Methods (private — helpers)
+
+        /// <summary>
+        /// Returns the union of neighbors of u across all layers using the given traversal.
+        /// </summary>
+        private static HashSet<uint> CombinedNeighborSet(uint u, List<ILayerOneMode> layers, EdgeTraversal traversal)
+        {
+            var set = new HashSet<uint>();
+            foreach (var layer in layers)
+                foreach (uint v in layer.GetNodeAlters(u, traversal))
+                    set.Add(v);
+            return set;
+        }
+
+        /// <summary>
+        /// Counts distinct edges among N(u): for each v in N, iterates v's neighbors
+        /// using Both traversal and checks membership in N. Divides by 2 because each
+        /// edge v-w is seen from both v's and w's perspective.
+        /// </summary>
+        private static double CountClosedPairs(uint u, HashSet<uint> N, List<ILayerOneMode> layers)
+        {
+            double count = 0;
+            foreach (uint v in N)
+                foreach (var layer in layers)
+                    foreach (uint w in layer.GetNodeAlters(v, EdgeTraversal.Both))
+                        if (w != u && N.Contains(w))
+                            count++;
+            return count / 2.0;
+        }
+
+        /// <summary>
+        /// B_{uv} = A_{uv} + A_{vu}: 0, 1, or 2. Used by Fagiolo's directed formula.
+        /// Sums across all specified layers.
+        /// </summary>
+        private static double SymWeight(uint u, uint v, List<ILayerOneMode> layers)
+        {
+            int count = 0;
+            if (layers.Any(l => l.GetEdgeValue(u, v) > 0)) count++;
+            if (layers.Any(l => l.GetEdgeValue(v, u) > 0)) count++;
+            return count;
+        }
+
+        /// <summary>
+        /// Returns a dictionary of edge weights from u to each neighbor, summed across layers.
+        /// Binary layers contribute 1.0 per edge.
+        /// </summary>
+        private static Dictionary<uint, double> CombinedEdgeWeights(uint u, List<ILayerOneMode> layers, EdgeTraversal traversal)
+        {
+            var weights = new Dictionary<uint, double>();
+            foreach (var layer in layers)
+            {
+                var (alters, wts) = layer.GetNodeAltersWithWeights(u, traversal);
+                bool hasWeights = wts.Length > 0;
+                for (int i = 0; i < alters.Length; i++)
+                {
+                    double w = hasWeights ? wts.Span[i] : 1.0;
+                    weights[alters.Span[i]] = weights.GetValueOrDefault(alters.Span[i]) + w;
+                }
+            }
+            return weights;
+        }
+
+        private static double CombinedEdgeWeight(uint u, uint v, List<ILayerOneMode> layers)
+        {
+            double total = 0;
+            foreach (var layer in layers)
+                total += layer.GetEdgeValue(u, v);
+            return total;
+        }
+
+        private static double MaxEdgeWeight(List<ILayerOneMode> layers)
+        {
+            double max = 0;
+            foreach (var layer in layers)
+                if (!layer.IsBinary)
+                    foreach (var (_, _, values) in layer.GetAllEgoData())
+                        foreach (float v in values.Span)
+                            if (v > max)
+                                max = v;
+            return max;
+        }
+
+        /// <summary>
+        /// Computes perNode(u) for every node in parallel (up to 'maxthreads', see 'setting()') and
+        /// collects the results into a dictionary. Each node's value is written to its own
+        /// pre-assigned array slot, so — unlike writing directly into a shared Dictionary, which is
+        /// not safe for concurrent writes even to distinct keys — no merging or locking is needed.
+        /// Used by all four clustering-coefficient formulas, whose per-node computations are fully
+        /// independent of one another.
+        /// </summary>
+        private static Dictionary<uint, double> ComputePerNodeParallel(uint[] nodeIds, Func<uint, double> perNode)
+        {
+            int n = nodeIds.Length;
+            var values = new double[n];
+            System.Threading.Tasks.Parallel.For(0, n, UserSettings.GetParallelOptions(), i =>
+            {
+                values[i] = perNode(nodeIds[i]);
+            });
+
+            var result = new Dictionary<uint, double>(n);
+            for (int i = 0; i < n; i++) result[nodeIds[i]] = values[i];
+            return result;
+        }
+
+        #endregion
+    }
+}

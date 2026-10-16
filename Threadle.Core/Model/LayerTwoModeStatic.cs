@@ -65,11 +65,11 @@ namespace Threadle.Core.Model
 
 
         #region Constructors
-        private LayerTwoModeStatic(string name, string[] hyperedgeNames, int[] offsetsHyperedges, uint[] hyperedgesNodeIdsFlat, Dictionary<uint,int> nodeIdToIndexMapper, int[] offsetsNodeIds, int[] nodeIdHyperedgesFlat)
+        private LayerTwoModeStatic(string name, string[] hyperedgeNames, int[] offsetsHyperedges, uint[] hyperedgesNodeIdsFlat, Dictionary<uint, int> nodeIdToIndexMapper, int[] offsetsNodeIds, int[] nodeIdHyperedgesFlat)
         {
             Name = name;
-            _hyperedgeNames= hyperedgeNames;
-            _offsetsHyperedges= offsetsHyperedges;
+            _hyperedgeNames = hyperedgeNames;
+            _offsetsHyperedges = offsetsHyperedges;
             _hyperedgeNodeIdsFlat = hyperedgesNodeIdsFlat;
             _nodeIdToIndexMapper = nodeIdToIndexMapper;
             _offsetsNodeIds = offsetsNodeIds;
@@ -125,7 +125,15 @@ namespace Threadle.Core.Model
             for (int i = 0; i < rows.Count; i++)
             {
                 offsetHyperedges[i] = hyperedgeNodeIdsList.Count;
-                uint[] sortedNodeIds = [.. rows[i].nodeIds.Order()];
+                // A duplicate node id within a single row (untrusted input - this is the raw
+                // import path, e.g. from a .bin file) would otherwise be added to this
+                // hyperedge's member list twice, making GetEdgeValue/CheckEdgeExists for that
+                // node overcount its shared hyperedges, and making PickRandomAlterO1 able to
+                // loop forever if a degenerate hyperedge ends up containing only repeats of one
+                // node id.
+                List<uint> sortedNodeIdsList = [.. rows[i].nodeIds];
+                Misc.DeduplicateUintList(sortedNodeIdsList);
+                uint[] sortedNodeIds = sortedNodeIdsList.ToArray();
                 hyperedgeNodeIdsList.AddRange(sortedNodeIds);
                 foreach (uint nodeId in sortedNodeIds)
                 {
@@ -463,7 +471,7 @@ namespace Threadle.Core.Model
                 for (int j = _offsetsHyperedges[h]; j < _offsetsHyperedges[h + 1]; j++)
                     if (_hyperedgeNodeIdsFlat[j] != nodeId)
                         newHyperedgeNodeIds.Add(_hyperedgeNodeIdsFlat[j]);
-                
+
             }
             newOffsetHyperedges[_hyperedgeNames.Length] = newHyperedgeNodeIds.Count;
 
@@ -578,6 +586,18 @@ namespace Threadle.Core.Model
             for (int j = 0; j < end - start; j++)
                 result[j] = _hyperedgeNames[_nodeIdHyperedgesFlat[start + j]];
             return result;
+        }
+
+        public IEnumerable<(string hypername, ReadOnlyMemory<uint> nodeIds)> GetNodeHyperedgesWithMembers(uint nodeId)
+        {
+            if (!_nodeIdToIndexMapper.TryGetValue(nodeId, out int nodeIndex))
+                yield break;
+            for (int i = _offsetsNodeIds[nodeIndex]; i < _offsetsNodeIds[nodeIndex + 1]; i++)
+            {
+                int h = _nodeIdHyperedgesFlat[i];
+                // No copying: a slice of the flat array of hyperedge members
+                yield return (_hyperedgeNames[h], new ReadOnlyMemory<uint>(_hyperedgeNodeIdsFlat, _offsetsHyperedges[h], _offsetsHyperedges[h + 1] - _offsetsHyperedges[h]));
+            }
         }
 
         public IEnumerable<(string hypername, uint[] nodeIds)> GetAllHyperedgeData()

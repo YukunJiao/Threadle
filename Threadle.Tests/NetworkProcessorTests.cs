@@ -172,6 +172,37 @@ public class NetworkProcessorTests
     }
 
     [Fact]
+    public void DichotomizeLayer_SelfLoopAboveThreshold_IsPreservedDynamic()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 5f);
+        net.AddEdge("trust", 1, 2, 1f);
+
+        var result = NetworkProcessor.DichotomizeLayer(net, "trust", ConditionType.ge, 3f, 1f, 0f, "binary");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["binary"].CheckEdgeExists(1, 1));
+        Assert.False(net.Layers["binary"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
+    public void DichotomizeLayer_SelfLoopAboveThreshold_IsPreservedStatic()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("trust", EdgeDirectionality.Undirected, EdgeType.Valued, true);
+        net.AddEdge("trust", 1, 1, 5f);
+        net.AddEdge("trust", 1, 2, 1f);
+        net.Pack("trust");
+
+        var result = NetworkProcessor.DichotomizeLayer(net, "trust", ConditionType.ge, 3f, 1f, 0f, "binary");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["binary"].CheckEdgeExists(1, 1));
+        Assert.False(net.Layers["binary"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
     public void DichotomizeLayer_OutputIsAlwaysDynamic()
     {
         var net = new Network("net", MakeNodeset());
@@ -182,6 +213,667 @@ public class NetworkProcessorTests
         NetworkProcessor.DichotomizeLayer(net, "trust", ConditionType.ge, 1f, 1f, 0f, "binary");
 
         Assert.False(net.Layers["binary"].IsStatic);
+    }
+
+    // ── Rewire ───────────────────────────────────────────────────────────────────
+    // Degree-preserving edge swaps (Maslov & Sneppen 2002): rather than pinning exact
+    // output (inherently random), these tests check the invariants the algorithm must
+    // always uphold regardless of the random sequence of swaps actually taken.
+
+    private static Network MakeRingWithChordsRewireNetwork(int n, EdgeDirectionality directionality, EdgeType edgeType, bool selfties = false)
+    {
+        var nodeset = new Nodeset("ns");
+        for (uint i = 1; i <= n; i++) nodeset.AddNode(i);
+        var net = new Network("net", nodeset);
+        net.AddLayerOneMode("layer", directionality, edgeType, selfties);
+        int weight = 1;
+        for (int i = 1; i <= n; i++)
+        {
+            int next = i == n ? 1 : i + 1;
+            net.AddEdge("layer", (uint)i, (uint)next, weight++);
+        }
+        for (int i = 1; i + 3 <= n; i += 3)
+            net.AddEdge("layer", (uint)i, (uint)(i + 3), weight++);
+        return net;
+    }
+
+    private static ILayerOneMode GetLayer(Network net, string layerName) => (ILayerOneMode)net.Layers[layerName];
+
+    private static List<(uint NodeId, uint Out, uint In)> DegreeSequence(ILayerOneMode layer, uint[] nodeIds)
+    {
+        return nodeIds
+            .OrderBy(id => id)
+            .Select(id => (id, layer.GetOutDegree(id), layer.GetInDegree(id)))
+            .ToList();
+    }
+
+    private static List<float> AllWeights(ILayerOneMode layer, uint[] nodeIds)
+    {
+        var weights = new List<float>();
+        foreach (var (egoId, alters, values) in layer.GetAllEgoData())
+            for (int i = 0; i < alters.Length; i++)
+                weights.Add(values.Span[i]);
+        if (layer.IsSymmetric && layer.Selfties)
+            foreach (uint nodeId in nodeIds)
+                if (layer.CheckEdgeExists(nodeId, nodeId))
+                    weights.Add(layer.GetEdgeValue(nodeId, nodeId));
+        return weights;
+    }
+
+    [Fact]
+    public void RewireLayer_UndirectedBinary_PreservesDegreeSequence()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);
+        var before = DegreeSequence(GetLayer(net, "layer"), net.Nodeset.NodeIdArray);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var after = DegreeSequence(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public void RewireLayer_DirectedBinary_PreservesInAndOutDegreeSequence()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Directed, EdgeType.Binary);
+        var before = DegreeSequence(GetLayer(net, "layer"), net.Nodeset.NodeIdArray);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var after = DegreeSequence(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public void RewireLayer_ThreeEdgeSwap_PreservesInAndOutDegreeSequence()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Directed, EdgeType.Binary);
+        var before = DegreeSequence(GetLayer(net, "layer"), net.Nodeset.NodeIdArray);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired", threeEdgeSwap: true);
+
+        Assert.True(result.Success, result.Message);
+        var after = DegreeSequence(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public void RewireLayer_ThreeEdgeSwapRequested_SymmetricLayer_IgnoredAndStillSucceeds()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);
+        var before = DegreeSequence(GetLayer(net, "layer"), net.Nodeset.NodeIdArray);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired", threeEdgeSwap: true);
+
+        Assert.True(result.Success, result.Message);
+        var after = DegreeSequence(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray);
+        Assert.Equal(before, after);
+    }
+
+    [Fact]
+    public void RewireLayer_SelftiesDisallowed_NeverCreatesSelfLoop()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary, selfties: false);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var rewired = GetLayer(net, "rewired");
+        foreach (uint nodeId in net.Nodeset.NodeIdArray)
+            Assert.False(rewired.CheckEdgeExists(nodeId, nodeId));
+    }
+
+    [Fact]
+    public void RewireLayer_ValuedDirected_WeightMultisetPreserved()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Directed, EdgeType.Valued);
+        var beforeWeights = AllWeights(GetLayer(net, "layer"), net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var afterWeights = AllWeights(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+        Assert.Equal(beforeWeights, afterWeights);
+    }
+
+    [Fact]
+    public void RewireLayer_ValuedSymmetric_WeightMultisetPreservedWithSelfties()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Valued, selfties: true);
+        net.AddEdge("layer", 5, 5, 999f);
+        var beforeWeights = AllWeights(GetLayer(net, "layer"), net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var afterWeights = AllWeights(GetLayer(net, "rewired"), net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+        Assert.Equal(beforeWeights, afterWeights);
+    }
+
+    [Fact]
+    public void RewireLayer_ValuedSymmetric_TwoDistinctSelfties_PreservesEdgeCountAndWeights()
+    {
+        // Regression test: if the swap chain ever picks two DISTINCT existing self-loops to swap
+        // against each other, canonicalizing both resulting pairs collapses them into a single
+        // ordinary edge once _deduplicateEdgesets() runs - silently dropping the layer's total
+        // edge count by one and discarding one of the two original self-loop weights. With many
+        // self-loops present (half the nodes here), this combination is virtually certain to be
+        // picked at least once across a full swap run, so both invariants must hold unconditionally.
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Valued, selfties: true);
+        for (uint nodeId = 2; nodeId <= 20; nodeId += 2)
+            net.AddEdge("layer", nodeId, nodeId, 900f + nodeId);
+        var originalLayer = GetLayer(net, "layer");
+        ulong originalEdgeCount = originalLayer.NbrEdges;
+        var beforeWeights = AllWeights(originalLayer, net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        var rewired = GetLayer(net, "rewired");
+        Assert.Equal(originalEdgeCount, rewired.NbrEdges);
+        var afterWeights = AllWeights(rewired, net.Nodeset.NodeIdArray).OrderBy(w => w).ToList();
+        Assert.Equal(beforeWeights, afterWeights);
+    }
+
+    [Fact]
+    public void RewireLayer_BinarySymmetric_TwoDistinctSelfties_PreservesEdgeCount()
+    {
+        // Same scenario as the valued test above, but binary: there's no weight to lose, but the
+        // merge of two self-loops into one ordinary edge still drops the total edge count by one.
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary, selfties: true);
+        for (uint nodeId = 2; nodeId <= 20; nodeId += 2)
+            net.AddEdge("layer", nodeId, nodeId);
+        ulong originalEdgeCount = GetLayer(net, "layer").NbrEdges;
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(originalEdgeCount, GetLayer(net, "rewired").NbrEdges);
+    }
+
+    [Fact]
+    public void RewireLayer_OriginalLayerUnmodified()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);
+        ulong originalEdgeCount = GetLayer(net, "layer").NbrEdges;
+
+        NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.Equal(originalEdgeCount, GetLayer(net, "layer").NbrEdges);
+        Assert.True(net.CheckEdgeExists("layer", 1, 2).Value);
+    }
+
+    [Fact]
+    public void RewireLayer_DefaultNewLayerName_UsesRewiredSuffix()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);
+        string newLayerName = net.GetNextAvailableLayerName("layer-rewired");
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", newLayerName);
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(net.Layers.ContainsKey("layer-rewired"));
+    }
+
+    [Fact]
+    public void RewireLayer_FewEdges_SucceedsAsNoOp()
+    {
+        var nodeset = new Nodeset("ns");
+        nodeset.AddNode(1);
+        nodeset.AddNode(2);
+        var net = new Network("net", nodeset);
+        net.AddLayerOneMode("layer", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("layer", 1, 2);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "rewired");
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(net.CheckEdgeExists("rewired", 1, 2).Value);
+    }
+
+    [Fact]
+    public void RewireLayer_NonExistentLayer_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        var result = NetworkProcessor.RewireLayer(net, "ghost", "rewired");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RewireLayer_TwoModeLayer_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerTwoMode("clubs");
+        var result = NetworkProcessor.RewireLayer(net, "clubs", "rewired");
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void RewireLayer_NewLayerNameAlreadyExists_Fails()
+    {
+        var net = MakeRingWithChordsRewireNetwork(20, EdgeDirectionality.Undirected, EdgeType.Binary);
+        net.AddLayerOneMode("taken", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+
+        var result = NetworkProcessor.RewireLayer(net, "layer", "taken");
+
+        Assert.False(result.Success);
+    }
+
+    // ── MergeLayers ────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void MergeLayers_LayerNotFound_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        var result = NetworkProcessor.MergeLayers(net, "a", "ghost", MergeMethod.Or, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("LayerNotFound", result.Code);
+    }
+
+    [Fact]
+    public void MergeLayers_OneModeWithTwoMode_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerTwoMode("clubs");
+        var result = NetworkProcessor.MergeLayers(net, "a", "clubs", MergeMethod.Or, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("MismatchedLayerTypes", result.Code);
+        Assert.False(net.Layers.ContainsKey("merged"));
+    }
+
+    private static Network MakeTwoModeMergeNetwork()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerTwoMode("x");
+        net.AddLayerTwoMode("y");
+        net.AddHyperedge("x", "shared", [1, 2, 3]);
+        net.AddHyperedge("x", "onlyX", [4, 5]);
+        net.AddHyperedge("y", "shared", [3, 4]);
+        net.AddHyperedge("y", "onlyY", [1]);
+        return net;
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_Or_UnionOfHyperedgesAndNodes()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        Assert.True(result.Success);
+        var merged = Assert.IsType<LayerTwoMode>(net.Layers["merged"]);
+        Assert.Equal(3u, merged.NbrHyperedges);
+        Assert.Equal(new uint[] { 1, 2, 3, 4 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(new uint[] { 4, 5 }, merged.GetHyperedgeNodeIds("onlyX"));
+        Assert.Equal(new uint[] { 1 }, merged.GetHyperedgeNodeIds("onlyY"));
+        Assert.Equal(new[] { "onlyY", "shared" }, merged.GetNodeHyperedgeNames(1).Order());
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_And_IntersectionOfHyperedgesAndNodes()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.And, "merged");
+        Assert.True(result.Success);
+        var merged = Assert.IsType<LayerTwoMode>(net.Layers["merged"]);
+        Assert.Equal(1u, merged.NbrHyperedges);
+        Assert.Equal(new uint[] { 3 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.False(merged.ContainsHyperedge("onlyX"));
+        Assert.False(merged.ContainsHyperedge("onlyY"));
+        Assert.Empty(merged.GetNodeHyperedgeNames(1));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_And_SharedHyperedgeWithoutCommonNodes_KeptEmpty()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerTwoMode("x");
+        net.AddLayerTwoMode("y");
+        net.AddHyperedge("x", "h", [1, 2]);
+        net.AddHyperedge("y", "h", [3]);
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.And, "merged");
+        Assert.True(result.Success);
+        var merged = (ILayerTwoMode)net.Layers["merged"];
+        Assert.True(merged.ContainsHyperedge("h"));
+        Assert.Empty(merged.GetHyperedgeNodeIds("h"));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_DefaultMethod_IsOr()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", null, "merged");
+        Assert.True(result.Success);
+        Assert.Equal(3u, ((ILayerTwoMode)net.Layers["merged"]).NbrHyperedges);
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_StaticLayers_Merged()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        net.Layers["x"] = LayerTwoModeStatic.FromDynamic((LayerTwoMode)net.Layers["x"]);
+        net.Layers["y"] = LayerTwoModeStatic.FromDynamic((LayerTwoMode)net.Layers["y"]);
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        Assert.True(result.Success);
+        var merged = (ILayerTwoMode)net.Layers["merged"];
+        Assert.Equal(new uint[] { 1, 2, 3, 4 }, merged.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(3u, merged.NbrHyperedges);
+    }
+
+    [Theory]
+    [InlineData(MergeMethod.Xor)]
+    [InlineData(MergeMethod.Sum)]
+    [InlineData(MergeMethod.Average)]
+    [InlineData(MergeMethod.Max)]
+    [InlineData(MergeMethod.Min)]
+    [InlineData(MergeMethod.Product)]
+    public void MergeLayers_TwoMode_InvalidMethod_Fails(MergeMethod method)
+    {
+        var net = MakeTwoModeMergeNetwork();
+        var result = NetworkProcessor.MergeLayers(net, "x", "y", method, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("InvalidMergeMethod", result.Code);
+        Assert.False(net.Layers.ContainsKey("merged"));
+    }
+
+    [Fact]
+    public void MergeLayers_TwoMode_SourceLayersUnchanged()
+    {
+        var net = MakeTwoModeMergeNetwork();
+        NetworkProcessor.MergeLayers(net, "x", "y", MergeMethod.Or, "merged");
+        var x = (ILayerTwoMode)net.Layers["x"];
+        var y = (ILayerTwoMode)net.Layers["y"];
+        Assert.Equal(new uint[] { 1, 2, 3 }, x.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(new uint[] { 3, 4 }, y.GetHyperedgeNodeIds("shared"));
+        Assert.Equal(2u, x.NbrHyperedges);
+        Assert.Equal(2u, y.NbrHyperedges);
+    }
+
+    [Fact]
+    public void MergeLayers_MismatchedDirectionality_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("directed", EdgeDirectionality.Directed, EdgeType.Binary, false);
+        net.AddLayerOneMode("undirected", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        var result = NetworkProcessor.MergeLayers(net, "directed", "undirected", MergeMethod.Or, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("MismatchedDirectionality", result.Code);
+    }
+
+    [Fact]
+    public void MergeLayers_NewLayerNameAlreadyExists_Fails()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("merged", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+        Assert.False(result.Success);
+        Assert.Equal("LayerAlreadyExists", result.Code);
+    }
+
+    [Fact]
+    public void MergeLayers_And_BothBinary_OnlySharedEdgeRemains()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("a", 2, 3);
+        net.AddEdge("b", 1, 2);
+        net.AddEdge("b", 3, 4);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.And, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.False(net.Layers["merged"].CheckEdgeExists(2, 3));
+        Assert.False(net.Layers["merged"].CheckEdgeExists(3, 4));
+        Assert.Equal(EdgeType.Binary, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+    }
+
+    [Fact]
+    public void MergeLayers_Or_BothBinary_UnionOfEdgesRemains()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("b", 3, 4);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(3, 4));
+        Assert.Equal(EdgeType.Binary, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+    }
+
+    [Fact]
+    public void MergeLayers_Xor_BothBinary_OnlyDifferingEdgeRemains()
+    {
+        // 1-2 in both layers (should drop), 2-3 only in a, 3-4 only in b
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("a", 2, 3);
+        net.AddEdge("b", 1, 2);
+        net.AddEdge("b", 3, 4);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Xor, "merged");
+
+        Assert.True(result.Success);
+        Assert.False(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(2, 3));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(3, 4));
+    }
+
+    [Fact]
+    public void MergeLayers_Sum_BothBinary_ProducesValuedCounts()
+    {
+        // 1-2 shared by both (count 2), 2-3 only in a (count 1)
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("a", 2, 3);
+        net.AddEdge("b", 1, 2);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Sum, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(EdgeType.Valued, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+        Assert.Equal(2f, net.Layers["merged"].GetEdgeValue(1, 2));
+        Assert.Equal(1f, net.Layers["merged"].GetEdgeValue(2, 3));
+    }
+
+    [Fact]
+    public void MergeLayers_SelfLoopInBothSources_IsPreserved()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("a", 1, 1);
+        net.AddEdge("b", 1, 1);
+        net.AddEdge("a", 1, 2);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 1));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_SelfLoopInOnlyOneSource_IsPreserved()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+        net.AddEdge("a", 1, 1);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(result.Success);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 1));
+    }
+
+    [Fact]
+    public void MergeLayers_Product_BothBinary_MatchesAnd()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("a", 2, 3);
+        net.AddEdge("b", 1, 2);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Product, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(EdgeType.Binary, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.False(net.Layers["merged"].CheckEdgeExists(2, 3));
+    }
+
+    [Fact]
+    public void MergeLayers_Max_BothBinary_MatchesOr()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("b", 3, 4);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Max, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(EdgeType.Binary, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+        Assert.True(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.True(net.Layers["merged"].CheckEdgeExists(3, 4));
+    }
+
+    [Fact]
+    public void MergeLayers_ValuedLayers_Sum_AddsValues()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddEdge("a", 1, 2, 3f);
+        net.AddEdge("b", 1, 2, 4f);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Sum, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(7f, net.Layers["merged"].GetEdgeValue(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_ValuedLayers_Max_TakesMax()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddEdge("a", 1, 2, 3f);
+        net.AddEdge("b", 1, 2, 7f);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Max, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(EdgeType.Valued, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+        Assert.Equal(7f, net.Layers["merged"].GetEdgeValue(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_MixedBinaryAndValued_MaxProducesValuedOutput()
+    {
+        // Max/Min/Product should only stay binary when BOTH inputs are binary.
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Valued, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("b", 1, 2, 5f);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Max, "merged");
+
+        Assert.True(result.Success);
+        Assert.Equal(EdgeType.Valued, ((ILayerOneMode)net.Layers["merged"]).EdgeValueType);
+        Assert.Equal(5f, net.Layers["merged"].GetEdgeValue(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_DirectedLayers_ArcsCombinedIndependentlyPerDirection()
+    {
+        // Directed + directed is well-defined without symmetrizing: arcs combine independently.
+        // a: 1->2 only. b: 2->1 only. AND should find no shared arc in either direction.
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Directed, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Directed, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("b", 2, 1);
+
+        var result = NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.And, "merged");
+
+        Assert.True(result.Success);
+        Assert.False(net.Layers["merged"].CheckEdgeExists(1, 2));
+        Assert.False(net.Layers["merged"].CheckEdgeExists(2, 1));
+    }
+
+    [Fact]
+    public void MergeLayers_OriginalLayersUnchanged()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.AddEdge("b", 3, 4);
+
+        NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.True(net.Layers["a"].CheckEdgeExists(1, 2));
+        Assert.False(net.Layers["a"].CheckEdgeExists(3, 4));
+        Assert.True(net.Layers["b"].CheckEdgeExists(3, 4));
+        Assert.False(net.Layers["b"].CheckEdgeExists(1, 2));
+    }
+
+    [Fact]
+    public void MergeLayers_OutputIsAlwaysDynamic()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddEdge("a", 1, 2);
+        net.Pack("a");
+
+        NetworkProcessor.MergeLayers(net, "a", "b", MergeMethod.Or, "merged");
+
+        Assert.False(net.Layers["merged"].IsStatic);
+    }
+
+    [Fact]
+    public void MergeLayers_StaticAndDynamicSources_ProduceIdenticalResults()
+    {
+        var net = new Network("net", MakeNodeset());
+        net.AddLayerOneMode("a_dyn", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b_dyn", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("a_packed", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        net.AddLayerOneMode("b_packed", EdgeDirectionality.Undirected, EdgeType.Binary, false);
+        foreach (var name in new[] { "a_dyn", "a_packed" }) net.AddEdge(name, 1, 2);
+        foreach (var name in new[] { "b_dyn", "b_packed" }) { net.AddEdge(name, 1, 2); net.AddEdge(name, 3, 4); }
+        net.Pack("a_packed");
+        net.Pack("b_packed");
+
+        NetworkProcessor.MergeLayers(net, "a_dyn", "b_dyn", MergeMethod.Or, "merged_dyn");
+        NetworkProcessor.MergeLayers(net, "a_packed", "b_packed", MergeMethod.Or, "merged_packed");
+
+        var dynLayer = net.Layers["merged_dyn"];
+        var packedLayer = net.Layers["merged_packed"];
+        for (uint i = 1; i <= 5; i++)
+            for (uint j = 1; j <= 5; j++)
+                Assert.Equal(dynLayer.CheckEdgeExists(i, j), packedLayer.CheckEdgeExists(i, j));
     }
 
     // ── NodesetProcessor.Filter with cloned attribute manager ─────────────────
@@ -236,7 +928,7 @@ public class NetworkProcessorTests
         Assert.True(filtered.SetNodeAttribute(1, "weight", "75").Success);
 
         // Read all three back and verify they hold distinct values (no index aliasing)
-        var scoreAttr  = filtered.GetNodeAttribute(1, "score");
+        var scoreAttr = filtered.GetNodeAttribute(1, "score");
         var activeAttr = filtered.GetNodeAttribute(1, "active");
         var weightAttr = filtered.GetNodeAttribute(1, "weight");
 
@@ -244,9 +936,9 @@ public class NetworkProcessorTests
         Assert.True(activeAttr.Success);
         Assert.True(weightAttr.Success);
 
-        Assert.Equal(8.5f,  (float)scoreAttr.Value.Value.GetValue(scoreAttr.Value.Type)!,   precision: 4);
+        Assert.Equal(8.5f, (float)scoreAttr.Value.Value.GetValue(scoreAttr.Value.Type)!, precision: 4);
         Assert.Equal(false, (bool)activeAttr.Value.Value.GetValue(activeAttr.Value.Type)!);
-        Assert.Equal(75,    (int)weightAttr.Value.Value.GetValue(weightAttr.Value.Type)!);
+        Assert.Equal(75, (int)weightAttr.Value.Value.GetValue(weightAttr.Value.Type)!);
     }
 
     [Fact]
@@ -271,13 +963,13 @@ public class NetworkProcessorTests
         filtered.SetNodeAttribute(1, "keep", "false");
         filtered.SetNodeAttribute(1, "new_attr", "Z");
 
-        var keepAttr    = filtered.GetNodeAttribute(1, "keep");
-        var newAttr     = filtered.GetNodeAttribute(1, "new_attr");
+        var keepAttr = filtered.GetNodeAttribute(1, "keep");
+        var newAttr = filtered.GetNodeAttribute(1, "new_attr");
 
         Assert.True(keepAttr.Success);
         Assert.True(newAttr.Success);
         Assert.Equal(false, (bool)keepAttr.Value.Value.GetValue(keepAttr.Value.Type)!);
-        Assert.Equal('Z',   (char)newAttr.Value.Value.GetValue(newAttr.Value.Type)!);
+        Assert.Equal('Z', (char)newAttr.Value.Value.GetValue(newAttr.Value.Type)!);
     }
 
     [Fact]
@@ -527,7 +1219,7 @@ public class NetworkProcessorTests
     [Fact]
     public void ProjectTwoMode_Count_StaticLayer_MatchesDynamic()
     {
-        var netDyn    = MakeNetworkWithTwoModeLayer();
+        var netDyn = MakeNetworkWithTwoModeLayer();
         var netPacked = MakeNetworkWithTwoModeLayer();
         foreach (var net in new[] { netDyn, netPacked })
         {
@@ -537,7 +1229,7 @@ public class NetworkProcessorTests
         }
         netPacked.Pack("clubs");
 
-        NetworkProcessor.ProjectTwoModeToOneMode(netDyn,    "clubs", ProjectionMethod.Count, "proj");
+        NetworkProcessor.ProjectTwoModeToOneMode(netDyn, "clubs", ProjectionMethod.Count, "proj");
         NetworkProcessor.ProjectTwoModeToOneMode(netPacked, "clubs", ProjectionMethod.Count, "proj");
 
         for (uint i = 1; i <= 5; i++)
@@ -551,7 +1243,7 @@ public class NetworkProcessorTests
     [Fact]
     public void ProjectTwoMode_Newman_StaticLayer_MatchesDynamic()
     {
-        var netDyn    = MakeNetworkWithTwoModeLayer();
+        var netDyn = MakeNetworkWithTwoModeLayer();
         var netPacked = MakeNetworkWithTwoModeLayer();
         foreach (var net in new[] { netDyn, netPacked })
         {
@@ -560,7 +1252,7 @@ public class NetworkProcessorTests
         }
         netPacked.Pack("clubs");
 
-        NetworkProcessor.ProjectTwoModeToOneMode(netDyn,    "clubs", ProjectionMethod.Newman, "proj");
+        NetworkProcessor.ProjectTwoModeToOneMode(netDyn, "clubs", ProjectionMethod.Newman, "proj");
         NetworkProcessor.ProjectTwoModeToOneMode(netPacked, "clubs", ProjectionMethod.Newman, "proj");
 
         for (uint i = 1; i <= 5; i++)

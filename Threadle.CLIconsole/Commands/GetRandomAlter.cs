@@ -16,12 +16,12 @@ namespace Threadle.CLIconsole.Commands
         /// <summary>
         /// Gets the command syntax definition as shown in help and usage output.
         /// </summary>
-        public string Syntax => "[uint] = getrandomalter(network = [var:network], nodeid = [uint], *layernames = [semicolon-separated layer names], *direction = ['both'(default),'in','out'], *balanced = ['true','false'(default)], *weighted = ['false'(default),'true'])";
+        public string Syntax => "[uint] = getrandomalter(network = [var:network], nodeid = [uint], *layernames = [semicolon-separated layer names], *direction = ['both'(default),'in','out'], *balanced = ['true','false'(default)], *weighted = ['false'(default),'true'], *layerweights = [semicolon-separated floats])";
 
         /// <summary>
         /// Gets a human-readable description of what the command does.
         /// </summary>
-        public string Description => "Get the node id of a random alter to the specified node. By default, both in- and outbound ties are considered, but this can be adjusted. By default, the pick is randomly picked among all layers, but one or more layers to use can be specified with the 'layernames' argument. If more than one layer is included, the 'balanced' argument specifies how the pick should be done. If balanced is set to 'true', a uniformly-randomly picked layer takes place first, followed by a random pick of an alter in the specific layer that was picked. If set to 'false', alters in all layers are first pooled together (with the possibility of an alter appearing multiple times) and a random pick is then done among this complete set of alters across layers. If 'weighted' is set to 'true', edge weights are used as transition probabilities; for binary layers each alter is treated as having weight 1.0f.\r\n";
+        public string Description => "Get the node id of a random alter to the specified node. By default, both in- and outbound ties are considered, but this can be adjusted. By default, the pick is randomly picked among all layers, but one or more layers to use can be specified with the 'layernames' argument. If more than one layer is included, the 'balanced' argument specifies how the pick should be done. If balanced is set to 'true', a randomly picked layer takes place first, followed by a random pick of an alter in the specific layer that was picked. If set to 'false', alters in all layers are first pooled together (with the possibility of an alter appearing multiple times) and a random pick is then done among this complete set of alters across layers. If 'weighted' is set to 'true', edge weights are used as transition probabilities; for binary layers each alter is treated as having weight 1.0f. 'layerweights' only applies when 'balanced' is true and more than one layer is used: it gives the relative probability of picking each layer first, in the same order as 'layernames' (which must then be given explicitly), normalized automatically (e.g. 8 and 16 means the second layer is picked twice as often as the first) - useful for e.g. modeling how much time a node spends in each context/domain. Without it, layer-picking is uniform. It is ignored when 'balanced' is false.";
 
         /// <summary>
         /// Gets a value indicating whether this command produces output that must be assigned to a variable.
@@ -43,7 +43,11 @@ namespace Threadle.CLIconsole.Commands
             EdgeTraversal edgeTraversal = command.GetArgumentParseEnum<EdgeTraversal>("direction", EdgeTraversal.Both);
             bool balanced = command.GetArgumentParseBool("balanced", false);
             bool weighted = command.GetArgumentParseBool("weighted", false);
-            OperationResult<uint> result = Analyses.GetRandomAlter(network, nodeId, layerNames, edgeTraversal, balanced, weighted);
+            string layerWeightsRaw = command.GetArgumentParseString("layerweights", "");
+            float[]? layerWeights = null;
+            if (layerWeightsRaw.Length > 0 && (layerWeights = Misc.SplitStringToFloatArray(layerWeightsRaw)) == null)
+                return CommandResult.Fail("ParseError", "Could not parse semicolon-separated list with layerweights.");
+            OperationResult<uint> result = Analyses.GetRandomAlter(network, nodeId, layerNames, edgeTraversal, balanced, weighted, layerWeights);
             return CommandResult.FromOperationResult(
                 opResult: result,
                 payload: result.Value

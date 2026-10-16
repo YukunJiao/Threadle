@@ -1,10 +1,12 @@
 ﻿namespace Threadle.Core.Utilities.Enums
 {
     /// <summary>
-    /// Enum with the available export formats, currently only Gexf
+    /// Enum with the available export formats
     /// </summary>
     public enum ExportFormat
     {
-        Gexf
+        Gexf,
+        Graphml,
+        Pajek
     }
 }

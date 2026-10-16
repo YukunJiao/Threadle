@@ -19,6 +19,235 @@ namespace Threadle.Core.Processing
 
 
         #region Methods (public)
+
+        /// <summary>
+        /// Converts a binary 1-mode layer into a valued layer with the same directionality, where every
+        /// existing tie is given the value 1. Topology is otherwise unchanged — this is a pure type
+        /// promotion, not a re-weighting. Note that conversion creates a new layer, without modifying
+        /// the original layer.
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="layerName">The name of the 1-mode binary layer to convert.</param>
+        /// <param name="newLayerName">The name of the new 1-mode valued layer to store the converted data in.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public static OperationResult BinaryToValuedLayer(Network network, string layerName, string newLayerName)
+        {
+            if (!network.Layers.TryGetValue(layerName, out var layer))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName}' does not exist in network '{network.Name}'.");
+            if (!(layer is ILayerOneMode originalLayer))
+                return OperationResult.Fail("InvalidLayerType", $"Layer '{layerName}' is not a 1-mode layer.");
+            if (!originalLayer.IsBinary)
+                return OperationResult.Fail("ConstraintLayerAlreadyValued", $"Layer '{layerName}' is already valued, conversion to a valued layer is not applicable.");
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, originalLayer.Directionality, EdgeType.Valued, originalLayer.Selfties);
+            foreach (var (nodeId, alters, _) in originalLayer.GetAllEgoData())
+                foreach (uint partnerId in alters.Span)
+                    newLayer._addEdge(nodeId, partnerId, 1f);
+
+            // GetAllEgoData() never yields self-loops for symmetric layers — a symmetric edgeset
+            // only yields each edge once, from the lower node id (partnerId > egoId), a condition a
+            // self-loop can never satisfy. Add them explicitly so they aren't silently dropped.
+            if (originalLayer.IsSymmetric && originalLayer.Selfties)
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (originalLayer.GetEdgeValue(nodeId, nodeId) > 0)
+                        newLayer._addEdge(nodeId, nodeId, 1f);
+
+            newLayer._sortEdgesets();
+            network.AddLayer(newLayerName, newLayer);
+            return OperationResult.Ok($"Converted layer '{layerName}' to a valued layer (all ties set to 1) and stored it as new layer '{newLayerName}', all in network '{network.Name}'.");
+        }
+
+        /// <summary>
+        /// Converts a symmetric (undirected) 1-mode layer into a directed layer, turning each undirected
+        /// tie into two independent directed arcs (one in each direction) carrying the same value. The
+        /// resulting layer keeps the original's edge value type (binary stays binary, valued stays
+        /// valued) — this is purely a directionality conversion. Note that conversion creates a new
+        /// layer, without modifying the original layer.
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="layerName">The name of the 1-mode undirected layer to convert.</param>
+        /// <param name="newLayerName">The name of the new 1-mode directed layer to store the converted data in.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public static OperationResult SymmetricToDirectedLayer(Network network, string layerName, string newLayerName)
+        {
+            if (!network.Layers.TryGetValue(layerName, out var layer))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName}' does not exist in network '{network.Name}'.");
+            if (!(layer is ILayerOneMode originalLayer))
+                return OperationResult.Fail("InvalidLayerType", $"Layer '{layerName}' is not a 1-mode layer.");
+            if (!originalLayer.IsSymmetric)
+                return OperationResult.Fail("ConstraintLayerAlreadyDirected", $"Layer '{layerName}' is already directed, conversion to a directed layer is not applicable.");
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, EdgeDirectionality.Directed, originalLayer.EdgeValueType, originalLayer.Selfties);
+            foreach (var (nodeId, alters, values) in originalLayer.GetAllEgoData())
+            {
+                // GetAllEgoData() never yields self-loops for symmetric layers (see BinaryToValuedLayer),
+                // so every pair here is guaranteed nodeId != partnerId — both directions always apply.
+                bool hasValues = values.Length > 0;
+                for (int i = 0; i < alters.Length; i++)
+                {
+                    uint partnerId = alters.Span[i];
+                    float value = hasValues ? values.Span[i] : 1f;
+                    newLayer._addEdge(nodeId, partnerId, value);
+                    newLayer._addEdge(partnerId, nodeId, value);
+                }
+            }
+
+            // Self-loops are excluded from GetAllEgoData() for symmetric layers (see above) — add
+            // them explicitly. A self-loop needs only one _addEdge call: node i's arc to itself.
+            if (originalLayer.Selfties)
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                {
+                    float selfValue = originalLayer.GetEdgeValue(nodeId, nodeId);
+                    if (selfValue > 0)
+                        newLayer._addEdge(nodeId, nodeId, selfValue);
+                }
+
+            newLayer._sortEdgesets();
+            network.AddLayer(newLayerName, newLayer);
+            return OperationResult.Ok($"Converted layer '{layerName}' to a directed layer (two arcs per original tie) and stored it as new layer '{newLayerName}', all in network '{network.Name}'.");
+        }
+
+        /// <summary>
+        /// Merges two layers of the same mode into a new layer of that mode, storing the result under the
+        /// provided name. Merging creates a new layer, without modifying either source layer. A 1-mode
+        /// layer cannot be merged with a 2-mode layer.
+        /// Two 1-mode layers are merged pairwise on their ties (see <see cref="MergeOneModeLayers"/>), and two
+        /// 2-mode layers are merged on their hyperedges, matched by name (see <see cref="MergeTwoModeLayers"/>).
+        /// If no method is provided, Max is used for 1-mode layers and Or for 2-mode layers.
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="layerName1">The name of the first layer to merge.</param>
+        /// <param name="layerName2">The name of the second layer to merge.</param>
+        /// <param name="method">The <see cref="MergeMethod"/> to use, or null for the default of the layers' mode.</param>
+        /// <param name="newLayerName">The name of the new layer to store the merged data in.</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public static OperationResult MergeLayers(Network network, string layerName1, string layerName2, MergeMethod? method, string newLayerName)
+        {
+            if (!network.Layers.TryGetValue(layerName1, out var layerA))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName1}' does not exist in network '{network.Name}'.");
+            if (!network.Layers.TryGetValue(layerName2, out var layerB))
+                return OperationResult.Fail("LayerNotFound", $"Layer '{layerName2}' does not exist in network '{network.Name}'.");
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+            if (layerA is ILayerOneMode oneModeA && layerB is ILayerOneMode oneModeB)
+                return MergeOneModeLayers(network, layerName1, oneModeA, layerName2, oneModeB, method ?? MergeMethod.Max, newLayerName);
+            if (layerA is ILayerTwoMode twoModeA && layerB is ILayerTwoMode twoModeB)
+                return MergeTwoModeLayers(network, layerName1, twoModeA, layerName2, twoModeB, method ?? MergeMethod.Or, newLayerName);
+            return OperationResult.Fail("MismatchedLayerTypes", $"Layer '{layerName1}' and '{layerName2}' are of different modes (one is 1-mode, the other 2-mode): only layers of the same mode can be merged.");
+        }
+
+        /// <summary>
+        /// Merges two 1-mode layers into a new 1-mode layer by the provided method.
+        /// Both source layers must share the same directionality (both directed or both undirected) —
+        /// symmetrize the directed one first with <see cref="SymmetrizeLayer"/> if they don't match.
+        /// The method fully determines the resulting layer's edge type: And/Or/Xor always produce a
+        /// binary layer (does a tie exist, ignoring its strength); Sum/Average always produce a valued
+        /// layer; Max/Min/Product produce a binary layer only if both source layers are binary, valued
+        /// otherwise. For binary source layers, And is equivalent to Product and Or is equivalent to Max;
+        /// Xor (true iff exactly one source layer has the tie) is not expressible via the other methods.
+        /// </summary>
+        private static OperationResult MergeOneModeLayers(Network network, string layerName1, ILayerOneMode oneModeA, string layerName2, ILayerOneMode oneModeB, MergeMethod method, string newLayerName)
+        {
+            if (oneModeA.IsSymmetric != oneModeB.IsSymmetric)
+                return OperationResult.Fail("MismatchedDirectionality",
+                    $"Layer '{layerName1}' and '{layerName2}' have different directionality (one is directed, the other undirected). Symmetrize the directed layer first with symmetrizelayer().");
+
+            bool bothBinary = oneModeA.IsBinary && oneModeB.IsBinary;
+            bool outputBinary = method switch
+            {
+                MergeMethod.And or MergeMethod.Or or MergeMethod.Xor => true,
+                MergeMethod.Sum or MergeMethod.Average => false,
+                _ => bothBinary // Max, Min, Product
+            };
+            EdgeType outputEdgeType = outputBinary ? EdgeType.Binary : EdgeType.Valued;
+
+            Func<float, float, float> MergeFunction = method switch
+            {
+                MergeMethod.And => (a, b) => (a > 0 && b > 0) ? 1f : 0f,
+                MergeMethod.Or => (a, b) => (a > 0 || b > 0) ? 1f : 0f,
+                MergeMethod.Xor => (a, b) => ((a > 0) != (b > 0)) ? 1f : 0f,
+                MergeMethod.Sum => (a, b) => a + b,
+                MergeMethod.Average => (a, b) => (a + b) / 2f,
+                MergeMethod.Max => (a, b) => Math.Max(a, b),
+                MergeMethod.Min => (a, b) => Math.Min(a, b),
+                _ => (a, b) => a * b // Product
+            };
+
+            bool selfties = oneModeA.Selfties || oneModeB.Selfties;
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, oneModeA.Directionality, outputEdgeType, selfties);
+
+            // Union of all node pairs with an edge in either layer.
+            var pairs = new HashSet<(uint, uint)>();
+            foreach (var (nodeId, alters, _) in oneModeA.GetAllEgoData())
+                foreach (uint partnerId in alters.Span)
+                    pairs.Add((nodeId, partnerId));
+            foreach (var (nodeId, alters, _) in oneModeB.GetAllEgoData())
+                foreach (uint partnerId in alters.Span)
+                    pairs.Add((nodeId, partnerId));
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (oneModeA.IsSymmetric && (oneModeA.Selfties || oneModeB.Selfties))
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (oneModeA.CheckEdgeExists(nodeId, nodeId) || oneModeB.CheckEdgeExists(nodeId, nodeId))
+                        pairs.Add((nodeId, nodeId));
+
+            foreach (var (node1, node2) in pairs)
+            {
+                float valA = oneModeA.GetEdgeValue(node1, node2);
+                float valB = oneModeB.GetEdgeValue(node1, node2);
+                float merged = MergeFunction(valA, valB);
+                if (merged > 0)
+                    newLayer._addEdge(node1, node2, merged);
+            }
+
+            newLayer._sortEdgesets();
+            newLayer._deduplicateEdgesets();
+            network.AddLayer(newLayerName, newLayer);
+            return OperationResult.Ok($"Merged layers '{layerName1}' and '{layerName2}' via {method} and stored the result as new layer '{newLayerName}', all in network '{network.Name}'.");
+        }
+
+        /// <summary>
+        /// Merges two 2-mode layers into a new 2-mode layer, matching hyperedges by name. Only And and Or
+        /// are valid methods. Or (union): every hyperedge that exists in either layer is included, and a
+        /// hyperedge that exists in both gets the union of its nodes in the two layers. And (intersection):
+        /// only hyperedges that exist in both layers are included, each with the nodes it has in both layers
+        /// (a shared hyperedge with no nodes in common is kept, but without nodes).
+        /// </summary>
+        private static OperationResult MergeTwoModeLayers(Network network, string layerName1, ILayerTwoMode twoModeA, string layerName2, ILayerTwoMode twoModeB, MergeMethod method, string newLayerName)
+        {
+            if (method != MergeMethod.And && method != MergeMethod.Or)
+                return OperationResult.Fail("InvalidMergeMethod", $"Method '{method}' cannot be used for merging 2-mode layers: use 'and' (intersection) or 'or' (union).");
+
+            // Index layer B's hyperedges by name once: static layers lack a fast name lookup.
+            var hyperedgesB = new Dictionary<string, uint[]>();
+            foreach (var (hyperName, nodeIds) in twoModeB.GetAllHyperedgeData())
+                hyperedgesB[hyperName] = nodeIds;
+
+            LayerTwoMode newLayer = new LayerTwoMode(newLayerName);
+            foreach (var (hyperName, nodeIdsA) in twoModeA.GetAllHyperedgeData())
+            {
+                if (hyperedgesB.Remove(hyperName, out var nodeIdsB))
+                {
+                    var merged = method == MergeMethod.Or ? nodeIdsA.Union(nodeIdsB) : nodeIdsA.Intersect(nodeIdsB);
+                    newLayer._addHyperedge(hyperName, [.. merged.Order()]);
+                }
+                else if (method == MergeMethod.Or)
+                    newLayer._addHyperedge(hyperName, [.. nodeIdsA.Distinct().Order()]);
+            }
+            // Whatever remains in hyperedgesB only exists in layer B.
+            if (method == MergeMethod.Or)
+                foreach (var (hyperName, nodeIdsB) in hyperedgesB)
+                    newLayer._addHyperedge(hyperName, [.. nodeIdsB.Distinct().Order()]);
+
+            network.AddLayer(newLayerName, newLayer);
+            return OperationResult.Ok($"Merged 2-mode layers '{layerName1}' and '{layerName2}' via {method} ({(method == MergeMethod.Or ? "union" : "intersection")} of hyperedges, matched by name) and stored the result as new 2-mode layer '{newLayerName}' with {newLayer.NbrHyperedges} hyperedges, all in network '{network.Name}'.");
+        }
+
+
         /// <summary>
         /// Symmetrizes the directed edges in a 1-mode layer by the provided method, storing these new symmetrized
         /// edges in a new symmetric 1-mode layer with the same value type with the provided name.
@@ -38,7 +267,9 @@ namespace Threadle.Core.Processing
             if (originalLayer.IsSymmetric)
                 return OperationResult.Ok($"Layer '{layerName}' is already symmetric.");
 
-            LayerOneMode newLayer = new LayerOneMode(newLayerName, EdgeDirectionality.Undirected, originalLayer.EdgeValueType, originalLayer.Selfties);
+            bool needsValuedOutput = method == SymmetrizeMethod.sum || method == SymmetrizeMethod.average;
+            EdgeType outputEdgeType = needsValuedOutput ? EdgeType.Valued : originalLayer.EdgeValueType;
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, EdgeDirectionality.Undirected, outputEdgeType, originalLayer.Selfties);
 
             Func<float, float, float> SymmetrizeFunction = method switch
             {
@@ -61,8 +292,17 @@ namespace Threadle.Core.Processing
                 // Edges are binary
                 foreach (var (nodeId, alters, _) in originalLayer.GetAllEgoData())
                     foreach (uint partnerNodeId in alters.Span)
-                        if (!newLayer.CheckEdgeExists(nodeId, partnerNodeId) && SymmetrizeFunction(1, originalLayer.GetEdgeValue(partnerNodeId, nodeId)) > 0)
-                            newLayer._addEdge(nodeId, partnerNodeId);
+                    {
+                        if (newLayer.CheckEdgeExists(nodeId, partnerNodeId))
+                            continue;
+                        else
+                        {
+                            float reverseVal = originalLayer.GetEdgeValue(partnerNodeId, nodeId) > 0 ? 1f : 0f;
+                            float val = SymmetrizeFunction(1f, reverseVal);
+                            if (val > 0)
+                                newLayer._addEdge(nodeId, partnerNodeId, val);
+                        }
+                    }
             }
             else
             {
@@ -131,10 +371,140 @@ namespace Threadle.Core.Processing
                             newLayer._addEdge(nodeId, alters.Span[i], valueToAssign);
                     }
                 }
+
+            // GetAllEgoData() never yields self-loops for symmetric layers: add them explicitly.
+            if (originalLayer.IsSymmetric && originalLayer.Selfties)
+                foreach (uint nodeId in network.Nodeset.NodeIdArray)
+                    if (originalLayer.CheckEdgeExists(nodeId, nodeId))
+                    {
+                        float edgeValue = originalLayer.GetEdgeValue(nodeId, nodeId);
+                        if (Misc.CompareValues<float>(edgeValue, threshold, conditionType))
+                        {
+                            float valueToAssign = float.IsNaN(trueValue) ? edgeValue : trueValue;
+                            newLayer._addEdge(nodeId, nodeId, valueToAssign);
+                        }
+                        else
+                        {
+                            float valueToAssign = float.IsNaN(falseValue) ? edgeValue : falseValue;
+                            if (!IsZeroOrOne(valueToAssign) || valueToAssign != 0f)
+                                newLayer._addEdge(nodeId, nodeId, valueToAssign);
+                        }
+                    }
+
             newLayer._sortEdgesets();
             newLayer._deduplicateEdgesets();
             network.AddLayer(newLayerName, newLayer);
             return OperationResult.Ok($"Dichotomized layer '{layerName}' and stored it as new layer '{newLayerName}', all in network '{network.Name}'.");
+        }
+
+        /// <summary>
+        /// Randomizes a 1-mode layer via repeated degree-preserving edge swaps (Markov chain
+        /// switching; Maslov &amp; Sneppen 2002), storing the result in a new layer with the same
+        /// directionality, edge type and selfties setting as the original layer, which is left
+        /// unmodified. Every node's degree — in- and out-degree separately, for directed layers —
+        /// is preserved exactly throughout, since a swap is only accepted if it would not create a
+        /// self-loop the layer disallows or duplicate an already-existing edge.
+        /// <para>
+        /// Edge values travel with the edge object being repositioned, not with either endpoint as
+        /// such. For the '2edge' swap on a directed layer this means each edge's original tail
+        /// stays fixed and its value stays attached to that tail as its head is reassigned
+        /// (igraph's convention: pick two arcs (a,b) and (c,d), reconnect as (a,d) and (c,b)). For
+        /// '2edge' on a symmetric layer — which has no real tail/head to anchor a value to — which
+        /// endpoint of each edge is treated as the fixed side for that swap is chosen
+        /// independently at random every time, rather than by any fixed rule.
+        /// </para>
+        /// <para>
+        /// 'threeEdgeSwap' selects networkx's directed_edge_swap convention instead (ignored for
+        /// symmetric layers, which always use '2edge'): swaps along a 3-arc path a→b→c→d to
+        /// a→c→b→d. This exists because the simpler 2-edge swap is not guaranteed to be able to
+        /// reach every digraph with the same in/out-degree sequence, while this path-based form
+        /// is. Its middle arc is effectively reversed by the move (b→c becomes c→b), so that arc's
+        /// value ends up following a reversed connection rather than a simple tail-anchored one —
+        /// an inherent property of this swap's mechanics. Since it only ever operates on a path of
+        /// 4 distinct nodes, it never disturbs any self-loops already present in the layer.
+        /// </para>
+        /// 'numSwaps' is the target number of successful swaps (0: ten times the layer's edge
+        /// count, a common mixing heuristic); 'maxTries' caps the total number of attempts,
+        /// successful or not, so a layer too dense or structured to find enough valid swaps does
+        /// not loop unboundedly (0: ten times 'numSwaps').
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="layerName">The name of the 1-mode layer to rewire.</param>
+        /// <param name="newLayerName">The name of the new 1-mode layer to store the rewired result in.</param>
+        /// <param name="numSwaps">Target number of successful swaps (0: ten times the edge count).</param>
+        /// <param name="threeEdgeSwap">Use the 3-edge path swap instead of the 2-edge swap (directed layers only).</param>
+        /// <param name="maxTries">Maximum total swap attempts, successful or not (0: ten times numSwaps).</param>
+        /// <returns><see cref="OperationResult"/> object informing how well it went.</returns>
+        public static OperationResult RewireLayer(Network network, string layerName, string newLayerName, int numSwaps = 0, bool threeEdgeSwap = false, int maxTries = 0)
+        {
+            var layerResult = network.GetOneModeLayerForRead(layerName);
+            if (!layerResult.Success)
+                return OperationResult.Fail(layerResult.Code, layerResult.Message);
+            ILayerOneMode layer = layerResult.Value!;
+            if (network.Layers.ContainsKey(newLayerName))
+                return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
+
+            LayerOneMode newLayer = BuildRewiredLayer(layer, network.Nodeset.NodeIdArray, newLayerName, numSwaps, threeEdgeSwap, maxTries, out int achievedSwaps, out int targetSwaps);
+            network.AddLayer(newLayerName, newLayer);
+
+            string swapNote = achievedSwaps < targetSwaps
+                ? $" ({achievedSwaps} of {targetSwaps} target swaps achieved before reaching the attempt limit)"
+                : $" ({achievedSwaps} swaps)";
+            return OperationResult.Ok($"Rewired layer '{layerName}' and stored it as new layer '{newLayerName}', all in network '{network.Name}'{swapNote}.");
+        }
+
+        /// <summary>
+        /// Core of RewireLayer: gathers edges, runs the swap chain, and returns a fresh, standalone
+        /// LayerOneMode with the same directionality/edge type/selfties as the source layer — not
+        /// registered in any Network. Shared by RewireLayer (which adds the result to the network)
+        /// and SmallWorldCoefficient (Analyses.cs), which only needs scratch random-reference layers
+        /// to measure, never persisted.
+        /// </summary>
+        /// <param name="layer">The source layer to rewire.</param>
+        /// <param name="nodeIds">All node ids (needed to find self-loops in symmetric layers, since GetAllEgoData() never yields them).</param>
+        /// <param name="newLayerName">The name to give the returned layer (cosmetic only when not registered in a network).</param>
+        /// <param name="numSwaps">Target number of successful swaps (0: ten times the edge count).</param>
+        /// <param name="threeEdgeSwap">Use the 3-edge path swap instead of the 2-edge swap (directed layers only).</param>
+        /// <param name="maxTries">Maximum total swap attempts, successful or not (0: ten times numSwaps).</param>
+        /// <param name="achievedSwaps">The number of swaps actually performed.</param>
+        /// <param name="targetSwaps">The resolved target swap count, after applying the 0-means-auto default.</param>
+        /// <returns>A new, standalone LayerOneMode with the rewired edges.</returns>
+        internal static LayerOneMode BuildRewiredLayer(ILayerOneMode layer, uint[] nodeIds, string newLayerName, int numSwaps, bool threeEdgeSwap, int maxTries, out int achievedSwaps, out int targetSwaps)
+        {
+            bool directed = layer.IsDirectional;
+            bool selfties = layer.Selfties;
+
+            // Gather all edges (each undirected edge once; self-loops added explicitly, since
+            // GetAllEgoData() never yields them for symmetric layers).
+            var edges = new List<(uint From, uint To, float Weight)>();
+            foreach (var (egoId, alters, values) in layer.GetAllEgoData())
+            {
+                ReadOnlySpan<uint> alterSpan = alters.Span;
+                ReadOnlySpan<float> valueSpan = values.Span;
+                for (int i = 0; i < alterSpan.Length; i++)
+                    edges.Add((egoId, alterSpan[i], layer.IsValued ? valueSpan[i] : 1f));
+            }
+            if (!directed && selfties)
+                foreach (uint nodeId in nodeIds)
+                    if (layer.CheckEdgeExists(nodeId, nodeId))
+                        edges.Add((nodeId, nodeId, layer.IsValued ? layer.GetEdgeValue(nodeId, nodeId) : 1f));
+
+            int edgeCount = edges.Count;
+            targetSwaps = numSwaps > 0 ? numSwaps : 10 * edgeCount;
+            int attemptCap = maxTries > 0 ? maxTries : 10 * targetSwaps;
+
+            achievedSwaps = 0;
+            if (edgeCount >= 2 && targetSwaps > 0)
+                achievedSwaps = (directed && threeEdgeSwap)
+                    ? RunThreeEdgeSwaps(edges, targetSwaps, attemptCap)
+                    : RunTwoEdgeSwaps(edges, directed, selfties, targetSwaps, attemptCap);
+
+            LayerOneMode newLayer = new LayerOneMode(newLayerName, layer.Directionality, layer.IsValued ? EdgeType.Valued : EdgeType.Binary, selfties);
+            foreach (var (from, to, weight) in edges)
+                newLayer._addEdge(from, to, weight);
+            newLayer._sortEdgesets();
+            newLayer._deduplicateEdgesets();
+            return newLayer;
         }
 
         public static OperationResult ProjectTwoModeToOneMode(Network network, string layerName, ProjectionMethod method, string newLayerName)
@@ -146,23 +516,32 @@ namespace Threadle.Core.Processing
             if (network.Layers.ContainsKey(newLayerName))
                 return OperationResult.Fail("LayerAlreadyExists", $"Layer '{newLayerName}' already exists in network '{network.Name}'.");
 
+            // A hyperedge's membership is conceptually a set; a duplicate node id within one
+            // (which shouldn't occur, but importers aren't all guaranteed to de-duplicate) would
+            // otherwise create a spurious self-loop and inflate the weight/count of a real edge.
             Dictionary<(uint, uint), float> projectedEdges = [];
             if (method == ProjectionMethod.Count || method == ProjectionMethod.Newman)
-                foreach ((string hypername, uint[] nodeIds) in originalLayer.GetAllHyperedgeData())
+                foreach ((string hypername, uint[] rawNodeIds) in originalLayer.GetAllHyperedgeData())
+                {
+                    uint[] nodeIds = rawNodeIds.Distinct().ToArray();
                     for (int i = 0; i < nodeIds.Length; i++)
                         for (int j = i + 1; j < nodeIds.Length; j++)
                         {
                             var key = (Math.Min(nodeIds[i], nodeIds[j]), Math.Max(nodeIds[i], nodeIds[j]));
                             projectedEdges[key] = projectedEdges.GetValueOrDefault(key) + 1f / (method == ProjectionMethod.Count ? 1f : (nodeIds.Length - 1));
                         }
+                }
             else if (method == ProjectionMethod.Binary)
-                foreach ((string hypername, uint[] nodeIds) in originalLayer.GetAllHyperedgeData())
+                foreach ((string hypername, uint[] rawNodeIds) in originalLayer.GetAllHyperedgeData())
+                {
+                    uint[] nodeIds = rawNodeIds.Distinct().ToArray();
                     for (int i = 0; i < nodeIds.Length; i++)
                         for (int j = i + 1; j < nodeIds.Length; j++)
                         {
                             var key = (Math.Min(nodeIds[i], nodeIds[j]), Math.Max(nodeIds[i], nodeIds[j]));
                             projectedEdges.TryAdd(key, 1f);
                         }
+                }
 
             LayerOneMode newLayer = new LayerOneMode(newLayerName, EdgeDirectionality.Undirected, (method == ProjectionMethod.Binary) ? EdgeType.Binary : EdgeType.Valued, false);
             foreach (var ((node1, node2), value) in projectedEdges)
@@ -189,6 +568,77 @@ namespace Threadle.Core.Processing
             }
             return OperationResult<Network>.Ok(subnet);
         }
+        /// <summary>
+        /// Returns a column-oriented table with one row per ego, alter, layer and shared affiliation, for all
+        /// egos in <paramref name="egoIds"/>. Nothing is deduplicated: an alter appears once per ego, layer and
+        /// shared affiliation. For 1-mode layers, alters are obtained as in <see cref="Network.GetNodeAlters(string[], uint, EdgeTraversal, bool)"/>
+        /// (so packed layers only provide outbound edges), and the hyperedge and hypersize columns are null and 0.
+        /// For 2-mode layers, the direction is irrelevant: each shared affiliation gives one row per other member,
+        /// ego excluded, with the name of the hyperedge and its total number of members.
+        /// The optional condition applies to alters only, with the same semantics as <see cref="NodesetProcessor.Filter"/>.
+        /// </summary>
+        /// <param name="network">The Network object.</param>
+        /// <param name="egoIds">The ego node ids.</param>
+        /// <param name="layerNames">The names of the layers to include; all layers if null or empty.</param>
+        /// <param name="edgeTraversal">The edge direction to follow in directed 1-mode layers.</param>
+        /// <param name="attrName">Optional name of the alter attribute to apply the condition to; no condition if null.</param>
+        /// <param name="condition">The condition (required if <paramref name="attrName"/> is set).</param>
+        /// <param name="attrValueStr">The reference value of the condition, if applicable.</param>
+        /// <returns>An <see cref="OperationResult{T}"/> with the <see cref="AlterDetails"/> table.</returns>
+        public static OperationResult<AlterDetails> GetAlterDetails(Network network, uint[] egoIds, string[]? layerNames, EdgeTraversal edgeTraversal, string? attrName = null, ConditionType? condition = null, string attrValueStr = "")
+        {
+            foreach (uint egoId in egoIds)
+                if (!network.Nodeset.Contains(egoId))
+                    return OperationResult<AlterDetails>.Fail("NodeNotFound", $"Node ID '{egoId}' not found in nodeset '{network.Nodeset.Name}'.");
+
+            List<(string name, ILayer layer)> layers = [];
+            if (layerNames != null && layerNames.Length > 0)
+                foreach (string layerName in layerNames)
+                {
+                    if (network._getLayer(layerName) is not ILayer layer)
+                        return OperationResult<AlterDetails>.Fail("LayerNotFound", $"No layer with name '{layerName}' found.");
+                    layers.Add((layerName, layer));
+                }
+            else
+                foreach (var (name, layer) in network.Layers)
+                    layers.Add((name, layer));
+
+            if (attrName != null)
+            {
+                if (condition == null)
+                    return OperationResult<AlterDetails>.Fail("MissingCondition", $"A condition must be set when filtering alters on attribute '{attrName}'.");
+                if (NodesetProcessor.ValidateCondition(network.Nodeset, attrName, condition.Value, attrValueStr) is OperationResult { Success: false } validation)
+                    return OperationResult<AlterDetails>.Fail(validation);
+            }
+            // Alters often recur (across egos, layers and affiliations), so each one's condition is only evaluated once
+            Dictionary<uint, bool> alterMatches = [];
+            bool IsIncluded(uint alterId)
+            {
+                if (attrName == null)
+                    return true;
+                if (!alterMatches.TryGetValue(alterId, out bool matches))
+                    alterMatches[alterId] = matches = NodesetProcessor.MatchesCondition(network.Nodeset, alterId, attrName, condition!.Value, attrValueStr);
+                return matches;
+            }
+
+            AlterDetails table = new();
+            foreach (uint egoId in egoIds)
+                foreach (var (layerName, layer) in layers)
+                {
+                    if (layer is ILayerTwoMode layerTwoMode)
+                    {
+                        foreach (var (hyperName, members) in layerTwoMode.GetNodeHyperedgesWithMembers(egoId))
+                            foreach (uint alterId in members.Span)
+                                if (alterId != egoId && IsIncluded(alterId))
+                                    table.AddRow(egoId, alterId, layerName, hyperName, members.Length);
+                    }
+                    else
+                        foreach (uint alterId in layer.GetNodeAlters(egoId, edgeTraversal))
+                            if (IsIncluded(alterId))
+                                table.AddRow(egoId, alterId, layerName, null, 0);
+                }
+            return OperationResult<AlterDetails>.Ok(table, $"Found {table.NbrRows} ego-alter rows for {egoIds.Length} ego node(s) in network '{network.Name}'.");
+        }
         #endregion
 
 
@@ -203,6 +653,168 @@ namespace Threadle.Core.Processing
         private static bool IsZeroOrOne(float value)
         {
             return Math.Abs(value - 0f) < epsilon || Math.Abs(value - 1f) < epsilon;
+        }
+
+        /// <summary>Canonicalizes an undirected pair so (x,y) and (y,x) hash to the same key.</summary>
+        private static (uint, uint) Canon(uint x, uint y) => x <= y ? (x, y) : (y, x);
+
+        /// <summary>
+        /// Runs the '2edge' swap chain in place on 'edges': repeatedly picks two distinct edges
+        /// (a,b) and (c,d) and reconnects them as (a,d) and (c,b), accepting the swap only if
+        /// neither new pair already exists and (unless the layer allows selfties) neither is a
+        /// self-loop. For symmetric layers, each edge's anchor side is re-randomized on every
+        /// swap it participates in, since an undirected edge has no real tail/head to anchor a
+        /// value to. On a symmetric selfties layer, picking two distinct existing self-loops is
+        /// also rejected outright: both resulting pairs canonicalize to the same (a,c) node pair,
+        /// which would merge the two self-loops into a single ordinary edge - a result with no
+        /// "other side" to keep them apart, so it silently drops the edge list's total edge count
+        /// by one and (for a valued layer) discards one of the two original self-loop weights,
+        /// once BuildRewiredLayer's final _deduplicateEdgesets() pass collapses the resulting
+        /// duplicate-partner entries. Returns the number of successful swaps.
+        /// </summary>
+        private static int RunTwoEdgeSwaps(List<(uint From, uint To, float Weight)> edges, bool directed, bool selfties, int targetSwaps, int maxTries)
+        {
+            int n = edges.Count;
+            var edgeSet = new HashSet<(uint, uint)>(n);
+            foreach (var e in edges)
+                edgeSet.Add(directed ? (e.From, e.To) : Canon(e.From, e.To));
+
+            int successes = 0;
+            for (int tries = 0; successes < targetSwaps && tries < maxTries; tries++)
+            {
+                int i = Misc.Random.Next(n);
+                int j = Misc.Random.Next(n);
+                if (i == j)
+                    continue;
+
+                var (a, b, w1) = edges[i];
+                var (c, d, w2) = edges[j];
+
+                if (!directed)
+                {
+                    // Random per-swap orientation: which endpoint anchors the value is re-chosen every time.
+                    if (Misc.Random.Next(2) == 0) (a, b) = (b, a);
+                    if (Misc.Random.Next(2) == 0) (c, d) = (d, c);
+                }
+
+                // Two distinct self-loops (a==b and c==d - necessarily on different nodes, since
+                // each node has at most one self-loop entry here) can't be swapped into a valid
+                // simple-graph outcome: canonicalized, both new pairs below would become the
+                // identical (a,c) key, silently merging two self-loops into one ordinary edge -
+                // dropping the edge count by one and (for a valued layer) discarding one of the
+                // two original weights, once the duplicate-partner entries get deduplicated.
+                if (a == b && c == d)
+                    continue;
+
+                if (!selfties && (a == d || c == b))
+                    continue;
+
+                (uint, uint) newPair1 = directed ? (a, d) : Canon(a, d);
+                (uint, uint) newPair2 = directed ? (c, b) : Canon(c, b);
+                if (edgeSet.Contains(newPair1) || edgeSet.Contains(newPair2))
+                    continue;
+
+                edgeSet.Remove(directed ? (a, b) : Canon(a, b));
+                edgeSet.Remove(directed ? (c, d) : Canon(c, d));
+                edgeSet.Add(newPair1);
+                edgeSet.Add(newPair2);
+                edges[i] = (a, d, w1);
+                edges[j] = (c, b, w2);
+                successes++;
+            }
+            return successes;
+        }
+
+        /// <summary>
+        /// Runs the '3edge' (networkx directed_edge_swap) chain in place on 'edges': repeatedly
+        /// finds a random directed path a→b→c→d of 3 arcs over 4 distinct nodes among the
+        /// currently rewired arcs, and reconnects it as a→c→b→d, accepting the swap only if none
+        /// of the three new arcs already exist. Directed layers only; since it only ever operates
+        /// on a path of 4 distinct nodes, it can never create or disturb a self-loop. Maintains a
+        /// per-tail out-arc index (swap-with-last removal) so finding a path is not a rejection
+        /// search over all arcs. Returns the number of successful swaps.
+        /// </summary>
+        private static int RunThreeEdgeSwaps(List<(uint From, uint To, float Weight)> edges, int targetSwaps, int maxTries)
+        {
+            int n = edges.Count;
+            var edgeSet = new HashSet<(uint, uint)>(n);
+            var outIndicesByTail = new Dictionary<uint, List<int>>();
+            var positionInTailList = new int[n];
+            for (int idx = 0; idx < n; idx++)
+            {
+                edgeSet.Add((edges[idx].From, edges[idx].To));
+                if (!outIndicesByTail.TryGetValue(edges[idx].From, out var list))
+                    outIndicesByTail[edges[idx].From] = list = [];
+                positionInTailList[idx] = list.Count;
+                list.Add(idx);
+            }
+
+            void RemoveFromTailIndex(uint tail, int idx)
+            {
+                var list = outIndicesByTail[tail];
+                int pos = positionInTailList[idx];
+                int lastIdx = list[^1];
+                list[pos] = lastIdx;
+                positionInTailList[lastIdx] = pos;
+                list.RemoveAt(list.Count - 1);
+            }
+            void AddToTailIndex(uint tail, int idx)
+            {
+                if (!outIndicesByTail.TryGetValue(tail, out var list))
+                    outIndicesByTail[tail] = list = [];
+                positionInTailList[idx] = list.Count;
+                list.Add(idx);
+            }
+
+            int successes = 0;
+            for (int tries = 0; successes < targetSwaps && tries < maxTries; tries++)
+            {
+                int i = Misc.Random.Next(n);
+                var (a, b, w1) = edges[i];
+
+                if (!outIndicesByTail.TryGetValue(b, out var bOut) || bOut.Count == 0)
+                    continue;
+                int j = bOut[Misc.Random.Next(bOut.Count)];
+                if (j == i)
+                    continue;
+                uint c = edges[j].To;
+                float w2 = edges[j].Weight;
+
+                if (!outIndicesByTail.TryGetValue(c, out var cOut) || cOut.Count == 0)
+                    continue;
+                int k = cOut[Misc.Random.Next(cOut.Count)];
+                if (k == i || k == j)
+                    continue;
+                uint d = edges[k].To;
+                float w3 = edges[k].Weight;
+
+                // All 4 path nodes must be distinct: this also guarantees none of the 3 new arcs
+                // below can ever be a self-loop, regardless of whether the layer allows selfties.
+                if (a == b || a == c || a == d || b == c || b == d || c == d)
+                    continue;
+
+                if (edgeSet.Contains((a, c)) || edgeSet.Contains((c, b)) || edgeSet.Contains((b, d)))
+                    continue;
+
+                edgeSet.Remove((a, b));
+                edgeSet.Remove((b, c));
+                edgeSet.Remove((c, d));
+                edgeSet.Add((a, c));
+                edgeSet.Add((c, b));
+                edgeSet.Add((b, d));
+
+                // Tails: edges[i] keeps tail a; edges[j]'s tail moves b->c; edges[k]'s tail moves c->b.
+                RemoveFromTailIndex(b, j);
+                AddToTailIndex(c, j);
+                RemoveFromTailIndex(c, k);
+                AddToTailIndex(b, k);
+
+                edges[i] = (a, c, w1);
+                edges[j] = (c, b, w2);
+                edges[k] = (b, d, w3);
+                successes++;
+            }
+            return successes;
         }
         #endregion
     }

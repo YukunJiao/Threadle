@@ -2,10 +2,10 @@
 
   <PropertyGroup>
     <!-- Application Metadata -->
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <AssemblyName>threadle</AssemblyName>
     <Product>Threadle</Product>
-    <Description>Threadle CLI - High-performance network data management</Description>
+    <Description>Threadle CLI network analysis system client</Description>
     <Copyright>Copyright © 2026 Carl Nordlund</Copyright>
     <Authors>Carl Nordlund</Authors>
     <ApplicationIcon>Assets\icons.ico</ApplicationIcon>

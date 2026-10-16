@@ -279,6 +279,24 @@ public class GeneratorTests
     }
 
     [Fact]
+    public void GenerateErdosRenyiLayer_SymmetricSelfties_POne_NoDuplicateSelfties()
+    {
+        // A self-tie (row == col) on a symmetric layer is stored once, in the single
+        // edgeset shared by both "sides"; adding it as both outbound and inbound would
+        // append it twice to that one connection list. At p=1.0 every self-tie and every
+        // off-diagonal pair should be present exactly once: n*(n+1)/2 edges for n=10.
+        var nodeset = MakeNodeset(10);
+        var network = new Network("net", nodeset);
+        network.AddLayerOneMode("layer", EdgeDirectionality.Undirected, EdgeType.Binary, true);
+
+        Generators.GenerateErdosRenyiLayer(network, "layer", 1.0);
+
+        var edges = network.GetAllEdges("layer");
+        Assert.Equal(55, edges.Value!.Count); // 10*11/2
+        Assert.Equal(1f, network.Layers["layer"].GetEdgeValue(1, 1));
+    }
+
+    [Fact]
     public void GenerateErdosRenyiLayer_NegativeP_Fails()
     {
         var network = MakeNetworkWithUndirectedLayer();
@@ -376,6 +394,31 @@ public class GeneratorTests
     }
 
     [Fact]
+    public void GenerateWattsStrogatzLayer_KGreaterThanOrEqualToN_Fails()
+    {
+        // Each node needs k/2 distinct forward and k/2 distinct backward neighbors
+        // without the two sets wrapping around and overlapping; k >= n can't satisfy
+        // that (it would need more distinct neighbors than exist), so it must be
+        // rejected rather than silently creating duplicate multi-edges.
+        var network = MakeNetworkWithUndirectedLayer(10);
+        var result = Generators.GenerateWattsStrogatzLayer(network, "layer", 10, 0.1);
+        Assert.False(result.Success);
+        Assert.Equal("InvalidArgument", result.Code);
+    }
+
+    [Fact]
+    public void GenerateWattsStrogatzLayer_KEqualsNMinusOne_Succeeds()
+    {
+        // For odd n, k = n-1 is even and is the largest valid k (a complete graph) -
+        // the boundary case that must still be accepted, not rejected by the k>=n check.
+        var network = MakeNetworkWithUndirectedLayer(9);
+        var result = Generators.GenerateWattsStrogatzLayer(network, "layer", 8, 0.0);
+        Assert.True(result.Success);
+        var edges = network.GetAllEdges("layer");
+        Assert.Equal(36, edges.Value!.Count); // n*k/2 = 9*4 = 36
+    }
+
+    [Fact]
     public void GenerateWattsStrogatzLayer_BetaZero_ProducesRingLattice()
     {
         // Beta=0 means no rewiring: each node has exactly k edges
@@ -420,6 +463,23 @@ public class GeneratorTests
         var result = Generators.GenerateBarabasiAlbertLayer(network, "layer", 11);
         Assert.False(result.Success);
         Assert.Equal("InvalidArgument", result.Code);
+    }
+
+    [Fact]
+    public void GenerateBarabasiAlbertLayer_MGreaterThanN_PreExistingEdgesSurvive()
+    {
+        // The m-vs-n bounds check must run before the layer is cleared: a failed call must not
+        // destroy whatever edges the layer already had.
+        var network = MakeNetworkWithUndirectedLayer(10);
+        network.AddEdge("layer", 1, 2);
+        network.AddEdge("layer", 3, 4);
+
+        var result = Generators.GenerateBarabasiAlbertLayer(network, "layer", 11);
+
+        Assert.False(result.Success);
+        Assert.Equal("InvalidArgument", result.Code);
+        Assert.True(network.Layers["layer"].CheckEdgeExists(1, 2));
+        Assert.True(network.Layers["layer"].CheckEdgeExists(3, 4));
     }
 
     [Fact]

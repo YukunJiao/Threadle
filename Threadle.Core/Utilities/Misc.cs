@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Globalization;
+using System.Text;
 using Threadle.Core.Model;
 using Threadle.Core.Model.Enums;
 using Threadle.Core.Processing.Enums;
@@ -72,6 +73,22 @@ namespace Threadle.Core.Utilities
             var result = new uint[parts.Length];
             for (int i = 0; i < parts.Length; i++)
                 if (!uint.TryParse(parts[i].Trim(), out result[i]))
+                    return null;
+            return result;
+        }
+
+        /// <summary>
+        /// Converts a string of char-separated float values into an array of these float values.
+        /// </summary>
+        /// <param name="valuesString">A string with char-separated float values.</param>
+        /// <param name="sep">The separator character that should be used (default is semicolon ;)</param>
+        /// <returns>Returns an array of floats, or null if any part could not be parsed.</returns>
+        public static float[]? SplitStringToFloatArray(string valuesString, char sep = ';')
+        {
+            var parts = valuesString.Split(sep);
+            var result = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+                if (!float.TryParse(parts[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out result[i]))
                     return null;
             return result;
         }
@@ -153,9 +170,9 @@ namespace Threadle.Core.Utilities
             return type switch
             {
                 NodeAttributeType.Int => int.TryParse(valueStr, out int i) ? new NodeAttributeValue(i) : null,
-                NodeAttributeType.Float => float.TryParse(valueStr, out float f)? new NodeAttributeValue(f): null,
-                NodeAttributeType.Bool => bool.TryParse(valueStr, out bool b)? new NodeAttributeValue(b):null,
-                NodeAttributeType.Char => valueStr.Length==1? new NodeAttributeValue(valueStr[0]):null,
+                NodeAttributeType.Float => float.TryParse(valueStr, out float f) ? new NodeAttributeValue(f) : null,
+                NodeAttributeType.Bool => bool.TryParse(valueStr, out bool b) ? new NodeAttributeValue(b) : null,
+                NodeAttributeType.Char => valueStr.Length == 1 ? new NodeAttributeValue(valueStr[0]) : null,
                 NodeAttributeType.String => null,
                 _ => null
             };
@@ -344,9 +361,23 @@ namespace Threadle.Core.Utilities
 
         internal static string GetFileEnding(string filepath)
         {
+            // Path.GetExtension always finds the LAST dot, so a filename with multiple dots
+            // before its real extension (e.g. "my.network.tsv") isn't misread as ending in
+            // "network.tsv". The one two-part exception is a '.gz'-compressed file, where the
+            // inner format (e.g. "tsv" from "layer.tsv.gz") also needs to be captured.
             var filename = Path.GetFileName(filepath);
-            var firstDot = filename.IndexOf(".");
-            return firstDot >= 0 ? filename.Substring(firstDot + 1) : "";
+            string ext = Path.GetExtension(filename);
+            if (ext.Length == 0)
+                return "";
+            string result = ext.Substring(1);
+            if (result.Equals("gz", StringComparison.Ordinal))
+            {
+                string withoutGz = filename.Substring(0, filename.Length - ext.Length);
+                string innerExt = Path.GetExtension(withoutGz);
+                if (innerExt.Length > 0)
+                    result = innerExt.Substring(1) + "." + result;
+            }
+            return result;
         }
 
         internal static FileFormat GetFileFormatFromFileEnding(string filepath)
@@ -430,14 +461,25 @@ namespace Threadle.Core.Utilities
         }
 
         /// <summary>
-        /// Method to trim quotes from a string, returning the trimmed string.
-        /// Uses the constant array of quote characters as specified here as a Misc field.
+        /// Method to trim quotes from a string, returning the trimmed string. Removes a single
+        /// matching pair of wrapping quote characters (straight " or ', or a left/right curly
+        /// quote pair) - not every leading/trailing character that happens to be in the quote-char
+        /// set, which would otherwise also strip a value that legitimately starts or ends with an
+        /// apostrophe or curly quote (e.g. "'80s Club" or "James'").
         /// </summary>
         /// <param name="text"></param>
         /// <returns></returns>
         internal static string TrimQuotes(string text)
         {
-            return text.Trim(_quoteChars);
+            if (text.Length < 2)
+                return text;
+            char first = text[0];
+            char last = text[^1];
+            bool matchingPair = first == last && Array.IndexOf(_quoteChars, first) >= 0;
+            // Curly quotes are directional, so they pair left-with-right rather than by equality
+            // (indices into _quoteChars: 2/3 are the left/right double quotes, 4/5 left/right single).
+            bool curlyPair = (first == _quoteChars[2] && last == _quoteChars[3]) || (first == _quoteChars[4] && last == _quoteChars[5]);
+            return matchingPair || curlyPair ? text.Substring(1, text.Length - 2) : text;
         }
 
         internal static string FormatBytes(long bytes)
@@ -449,6 +491,78 @@ namespace Threadle.Core.Utilities
             if (bytes >= 1L << 10)
                 return $"{bytes / (double)(1L << 10):F1} kB";
             return $"{bytes} B";
+        }
+
+        /// <summary>
+        /// Converts 'value' to a bool, whether it already is one (returned as-is) or is a string that can
+        /// be parsed as one. Returns false (with result set to default) for any other case.
+        /// </summary>
+        /// <param name="value">The value to convert, either a bool or a string.</param>
+        /// <param name="result">The converted bool value, if successful.</param>
+        /// <returns>True if 'value' could be converted to a bool, false otherwise.</returns>
+        internal static bool TryConvertToBool(object value, out bool result)
+        {
+            switch (value)
+            {
+                case bool b:
+                    result = b;
+                    return true;
+                case string s when bool.TryParse(s, out bool parsed):
+                    result = parsed;
+                    return true;
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Converts 'value' to an int, whether it already is one (returned as-is) or is a string that can
+        /// be parsed as one. Returns false (with result set to default) for any other case.
+        /// </summary>
+        /// <param name="value">The value to convert, either an int or a string.</param>
+        /// <param name="result">The converted int value, if successful.</param>
+        /// <returns>True if 'value' could be converted to an int, false otherwise.</returns>
+        internal static bool TryConvertToInt(object value, out int result)
+        {
+            switch (value)
+            {
+                case int i:
+                    result = i;
+                    return true;
+                case string s when int.TryParse(s, out int parsed):
+                    result = parsed;
+                    return true;
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+
+        /// <summary>
+        /// Converts a string of pairSep-separated node id pairs (each pair itself valueSep-separated,
+        /// e.g. "1:2;3:4;5:6") into a list of (uint,uint) tuples. Returns null if the string is malformed
+        /// (a pair doesn't have exactly two values, or a value isn't a valid uint).
+        /// Note: the default valueSep is a colon, not a comma, since commas are the CLI's top-level argument
+        /// separator (see TextCommandParser) — an unquoted value containing a comma would be split apart
+        /// before it ever reaches this method.
+        /// </summary>
+        /// <param name="pairsString">A string with pairSep-separated node id pairs.</param>
+        /// <param name="pairSep">The separator character between pairs (default is semicolon ;)</param>
+        /// <param name="valueSep">The separator character between the two values within a pair (default is colon :)</param>
+        /// <returns>A list of (uint,uint) tuples, or null if the string could not be parsed.</returns>
+        public static List<(uint, uint)>? ParseUintPairList(string pairsString, char pairSep = ';', char valueSep = ':')
+        {
+            var pairStrings = pairsString.Split(pairSep, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var result = new List<(uint, uint)>(pairStrings.Length);
+            foreach (string pairString in pairStrings)
+            {
+                var values = pairString.Split(valueSep, StringSplitOptions.TrimEntries);
+                if (values.Length != 2 || !uint.TryParse(values[0], out uint first) || !uint.TryParse(values[1], out uint second))
+                    return null;
+                result.Add((first, second));
+            }
+            return result;
         }
         #endregion
     }

@@ -83,13 +83,18 @@ namespace Threadle.Core.Utilities
         /// <param name="hasHeader">Boolean to indicate whether the first line has headers (that should be ignored).</param>
         /// <param name="separator">The value-separating character/string used in the data filepath.</param>
         /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <param name="filterCol">Optional column index to filter lines on: if non-negative, only lines where this column equals <paramref name="filterValue"/> are imported.</param>
+        /// <param name="filterValue">The value that the filter column must have for a line to be imported.</param>
         /// <returns>An OperationResult informing how well it went.</returns>
-        public static OperationResult ImportOneModeEdgeList(string filepath, Network network, LayerOneMode layer, int node1col, int node2col, int valueCol, bool hasHeader, char separator, bool addMissingNodes)
+        public static OperationResult ImportOneModeEdgeList(string filepath, Network network, LayerOneMode layer, int node1col, int node2col, int valueCol, bool hasHeader, char separator, bool addMissingNodes, string? labelAttr = null, int filterCol = -1, string? filterValue = null)
         {
             try
             {
-                LayerImportExport.ImportOneModeEdgelist(filepath, network, layer, node1col, node2col, valueCol, hasHeader, separator, addMissingNodes);
-                return OperationResult.Ok($"Imported edgelist to 1-mode layer '{layer.Name}'");
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportOneModeEdgelist(filepath, network, layer, node1col, node2col, valueCol, hasHeader, separator, resolver, filterCol, filterValue);
+                return OperationResult.Ok($"Imported edgelist to 1-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
 
             }
             catch (Exception ex)
@@ -106,13 +111,16 @@ namespace Threadle.Core.Utilities
         /// <param name="layer">The <see cref="LayerOneMode"/> to install the data to.</param>
         /// <param name="separator">The value-separating character/string used in the data filepath.</param>
         /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
         /// <returns>An OperationResult informing how well it went.</returns>
-        public static OperationResult ImportOneModeMatrix(string filepath, Network network, LayerOneMode layer, char separator, bool addMissingNodes)
+        public static OperationResult ImportOneModeMatrix(string filepath, Network network, LayerOneMode layer, char separator, bool addMissingNodes, string? labelAttr = null)
         {
             try
             {
-                LayerImportExport.ImportOneModeMatrix(filepath, network, layer, separator, addMissingNodes);
-                return OperationResult.Ok($"Imported matrix to 1-mode layer '{layer.Name}'");
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportOneModeMatrix(filepath, network, layer, separator, resolver);
+                return OperationResult.Ok($"Imported matrix to 1-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
             }
             catch (Exception ex)
             {
@@ -132,13 +140,18 @@ namespace Threadle.Core.Utilities
         /// <param name="hasHeader">Boolean to indicate whether the first line has headers (that should be ignored).</param>
         /// <param name="separator">The value-separating character/string used in the data filepath.</param>
         /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
+        /// <param name="filterCol">Optional column index to filter lines on: if non-negative, only lines where this column equals <paramref name="filterValue"/> are imported.</param>
+        /// <param name="filterValue">The value that the filter column must have for a line to be imported.</param>
         /// <returns>An OperationResult informing how well it went.</returns>
-        public static OperationResult ImportTwoModeEdgeList(string filepath, Network network, LayerTwoMode layer, int nodeCol, int affCol, bool hasHeader, char separator, bool addMissingNodes)
+        public static OperationResult ImportTwoModeEdgeList(string filepath, Network network, LayerTwoMode layer, int nodeCol, int affCol, bool hasHeader, char separator, bool addMissingNodes, string? labelAttr = null, int filterCol = -1, string? filterValue = null)
         {
             try
             {
-                LayerImportExport.ImportTwoModeEdgelist(filepath, network, layer, nodeCol, affCol, separator, hasHeader, addMissingNodes);
-                return OperationResult.Ok($"Imported edgelist to 2-mode layer '{layer.Name}'");
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportTwoModeEdgelist(filepath, network, layer, nodeCol, affCol, separator, hasHeader, resolver, filterCol, filterValue);
+                return OperationResult.Ok($"Imported edgelist to 2-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
             }
             catch (Exception ex)
             {
@@ -156,13 +169,16 @@ namespace Threadle.Core.Utilities
         /// <param name="layer">The <see cref="LayerTwoMode"/> to install the data to.</param>
         /// <param name="separator">The value-separating character/string used in the data filepath.</param>
         /// <param name="addMissingNodes">A boolean indicating whether newly discovered node id's should be added to the Nodeset of the network or not.</param>
+        /// <param name="labelAttr">Optional name of a string node attribute holding node labels. If provided, node identifiers in the file are
+        /// treated as string labels that are matched against this attribute, with new nodes getting new node ids and their labels stored in this attribute.</param>
         /// <returns>An OperationResult informing how well it went.</param>
-        public static OperationResult ImportTwoModeMatrix(string filepath, Network network, LayerTwoMode layer, char separator, bool addMissingNodes)
+        public static OperationResult ImportTwoModeMatrix(string filepath, Network network, LayerTwoMode layer, char separator, bool addMissingNodes, string? labelAttr = null)
         {
             try
             {
-                LayerImportExport.ImportTwoModeMatrix(filepath, network, layer, separator, addMissingNodes);
-                return OperationResult.Ok($"Imported edgelist to 2-mode layer '{layer.Name}'");
+                var resolver = NodeIdResolver.Create(network.Nodeset, labelAttr, addMissingNodes);
+                LayerImportExport.ImportTwoModeMatrix(filepath, network, layer, separator, resolver);
+                return OperationResult.Ok($"Imported matrix/table to 2-mode layer '{layer.Name}'" + NodesAddedMessage(resolver));
             }
             catch (Exception ex)
             {
@@ -170,7 +186,7 @@ namespace Threadle.Core.Utilities
             }
         }
 
-        public static OperationResult ImportNodeAttributes(string filepath, Nodeset nodeset, bool addMissingNodes = false, char separator='\t')
+        public static OperationResult ImportNodeAttributes(string filepath, Nodeset nodeset, bool addMissingNodes = false, char separator = '\t')
         {
             try
             {
@@ -194,15 +210,19 @@ namespace Threadle.Core.Utilities
         /// <param name="filepath">The filepath to export to.</param>
         /// <param name="separator">The column-separating character to use in the edgelist.</param>
         /// <param name="header">Boolean whether the first row should contain column headers.</param>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (required if 'labelAttr' is given).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
         /// <returns>An OperationResult informing how well it went.</returns>
-        public static OperationResult ExportLayerEdgelist(ILayer layer, string filepath, char separator, bool header)
+        public static OperationResult ExportLayerEdgelist(ILayer layer, string filepath, char separator, bool header, Nodeset? nodeset = null, string? labelAttr = null)
         {
             try
             {
+                if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
+                    return error!;
                 if (layer is ILayerOneMode layerOneMode)
-                    LayerImportExport.ExportOneModeEdgeList(layerOneMode, filepath, separator, header);
+                    LayerImportExport.ExportOneModeEdgeList(layerOneMode, filepath, separator, header, idToLabel, nodeset);
                 else if (layer is ILayerTwoMode layerTwoMode)
-                    LayerImportExport.ExportTwoModeEdgeList(layerTwoMode, filepath, separator, header);
+                    LayerImportExport.ExportTwoModeEdgeList(layerTwoMode, filepath, separator, header, idToLabel);
                 else
                     return OperationResult.Fail("IOExportError", $"Did not recognize layer type of layer '{layer.Name}'.");
                 return OperationResult.Ok($"Exported layer '{layer.Name}' to filepath: {filepath}");
@@ -222,17 +242,21 @@ namespace Threadle.Core.Utilities
         /// <param name="filepath">The filepath to export to.</param>
         /// <param name="separator">The column-separating character to use in the matrix.</param>
         /// <param name="header">Boolean whether the first row should contain column headers.</param>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (required if 'labelAttr' is given).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
         /// <returns>An OperationResult informing how well it went.</returns>
-        public static OperationResult ExportLayerMatrix(ILayer layer, string filepath, char separator, bool header)
+        public static OperationResult ExportLayerMatrix(ILayer layer, string filepath, char separator, bool header, Nodeset? nodeset = null, string? labelAttr = null)
         {
             try
             {
+                if (!TryBuildLabelLookup(nodeset, labelAttr, out var idToLabel, out var error))
+                    return error!;
                 if (layer is ILayerOneMode layerOneMode)
-                    LayerImportExport.ExportOneModeMatrix(layerOneMode, filepath, separator, header);
+                    LayerImportExport.ExportOneModeMatrix(layerOneMode, filepath, separator, header, idToLabel, nodeset);
                 else if (layer is ILayerTwoMode layerTwoMode)
-                    LayerImportExport.ExportTwoModeMatrix(layerTwoMode, filepath, separator, header);
+                    LayerImportExport.ExportTwoModeMatrix(layerTwoMode, filepath, separator, header, idToLabel);
                 else
-                    return OperationResult.Fail("IOExportError", $"Did not recognize layer type of layer '{layer.Name}'." );
+                    return OperationResult.Fail("IOExportError", $"Did not recognize layer type of layer '{layer.Name}'.");
                 return OperationResult.Ok($"Exported layer '{layer.Name}' to filepath: {filepath}");
             }
             catch (Exception ex)
@@ -242,11 +266,52 @@ namespace Threadle.Core.Utilities
         }
 
         /// <summary>
-        /// Public-facing method for exporting a single-layer network to file. So far, only 'gexf' (Gephi) exists.
-        /// This public-facing method is for exports to single-layer formats, where the layer is specified.
+        /// Builds a node-id-to-string formatter for layer exports. With no 'labelAttr', every node is formatted
+        /// as its plain numeric id. With 'labelAttr', each node is formatted using its value for that node
+        /// attribute (of any type — not necessarily string), converted to its display string; a node with no
+        /// value for the attribute falls back to its numeric id individually. Neither a string type nor unique
+        /// values are required or checked for 'labelAttr' — if several nodes share a value, or lack one, that
+        /// is reflected as-is in the exported file.
+        /// </summary>
+        /// <param name="nodeset">The Nodeset to resolve 'labelAttr' against (ignored if 'labelAttr' is null/empty).</param>
+        /// <param name="labelAttr">Optional node attribute name whose value is written instead of the numeric node id.</param>
+        /// <param name="idToLabel">The resulting formatter.</param>
+        /// <param name="error">Set if 'labelAttr' was given but doesn't name an existing node attribute.</param>
+        /// <returns>True on success; false (with 'error' set) if 'labelAttr' names an attribute that doesn't exist.</returns>
+        private static bool TryBuildLabelLookup(Nodeset? nodeset, string? labelAttr, out Func<uint, string> idToLabel, out OperationResult? error)
+        {
+            error = null;
+            static string NumericLabel(uint id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            if (nodeset == null || string.IsNullOrEmpty(labelAttr))
+            {
+                idToLabel = NumericLabel;
+                return true;
+            }
+
+            var definition = nodeset.NodeAttributeDefinitionManager.GetNodeAttributeDefinition(labelAttr);
+            if (definition is null)
+            {
+                idToLabel = NumericLabel;
+                error = OperationResult.Fail("LabelAttributeNotFound", $"!Error: Label attribute '{labelAttr}' not found.");
+                return false;
+            }
+
+            byte attrIndex = definition.Value.Index;
+            NodeAttributeType attrType = definition.Value.AttrType;
+            idToLabel = id => nodeset.GetNodeAttribute(id, attrIndex) is NodeAttributeValue value
+                ? (attrType == NodeAttributeType.String ? nodeset.GetStringFromPool(value.RawValueAsInt()) : value.ToString(attrType))
+                : NumericLabel(id);
+            return true;
+        }
+
+        /// <summary>
+        /// Public-facing method for exporting a network to file in an external format: 'gexf' (Gephi) or 'graphml'.
+        /// For single-layer formats (gexf), the layer must be specified. For multilayer formats (graphml), an empty
+        /// layer name exports all layers.
         /// </summary>
         /// <param name="network">The network structure to export.</param>
-        /// <param name="format">The format to export to (Only has gexf (Gephi) right now.</param>
+        /// <param name="format">The format to export to.</param>
         /// <param name="layerName">The layer to export</param>
         /// <param name="filepath">Tjhe filepath to export to</param>
         /// <returns>An OperationResult informing how well it went.</returns>
@@ -264,13 +329,68 @@ namespace Threadle.Core.Utilities
                     // so that this looks similar to the other public-facing API:s for load/save
                     case ExportFormat.Gexf:
                         return ExportNetworkToGexf(network, layerName, filepath);
+                    case ExportFormat.Graphml:
+                        return ExportNetworkToGraphml(network, layerName, filepath);
+                    case ExportFormat.Pajek:
+                        return ExportNetworkToPajek(network, filepath);
                 }
-                return OperationResult.Fail("ExportFormatNotFound", $"Export format '{format}' not implemented.");                
+                return OperationResult.Fail("ExportFormatNotFound", $"Export format '{format}' not implemented.");
             }
             catch (Exception ex)
             {
                 return OperationResult.Fail("IOExportError", "Unexpected error when exporting network to filepath: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Public-facing method for importing a network from a file in an external format. Creates a new Network
+        /// and a new Nodeset, returned in a <see cref="StructureResult"/> (where the Nodeset is an additional structure).
+        /// </summary>
+        /// <param name="filepath">The file to import.</param>
+        /// <param name="format">The format of the file.</param>
+        /// <param name="layerAttr">Name of the edge attribute whose values specify the layer of each edge (null or empty: all edges in one layer).</param>
+        /// <param name="weightAttr">Name of the edge attribute holding edge values (null or empty: binary edges).</param>
+        /// <param name="idAttr">Name of the string node attribute to store the original node ids in, if these are not unsigned integers.</param>
+        /// <param name="labelAttr">Pajek only: name of the string node attribute to store each vertex's label in (null or empty: labels are discarded).</param>
+        /// <param name="packLayers">Whether layers should be packed after import.</param>
+        /// <returns>An OperationResult with a StructureResult holding the imported structures.</returns>
+        public static OperationResult<StructureResult> ImportNetwork(string filepath, ImportFormat format, string? layerAttr = "layer", string? weightAttr = "weight", string idAttr = "id", string? labelAttr = "label", bool packLayers = false)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(filepath))
+                    return OperationResult<StructureResult>.Fail("MissingFilePath", "No filepath provided.");
+                filepath = Path.GetFullPath(filepath);
+                StructureResult structureResult = format switch
+                {
+                    ImportFormat.Graphml => FileSerializerGraphml.Import(filepath, layerAttr, weightAttr, idAttr),
+                    ImportFormat.Pajek => FileSerializerPajek.Import(filepath, labelAttr),
+                    _ => throw new NotSupportedException($"Import format '{format}' not implemented.")
+                };
+                if (packLayers && structureResult.MainStructure is Network network)
+                    network.Pack(null);
+                return OperationResult<StructureResult>.Ok(structureResult);
+            }
+            catch (Exception e)
+            {
+                return OperationResult<StructureResult>.Fail("IOImportError", $"Error while importing network: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Exports a network (or one of its layers) to GraphML format. If no layer name is given, all layers are exported.
+        /// </summary>
+        /// <param name="network">The network to export.</param>
+        /// <param name="layerName">The layer to export (empty: all layers).</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        private static OperationResult ExportNetworkToGraphml(Network network, string layerName, string filepath)
+        {
+            if (!string.IsNullOrEmpty(layerName) && network._getLayer(layerName) is null)
+                return OperationResult.Fail("LayerNotFound", $"No layer named '{layerName}' found.");
+            FileSerializerGraphml.Export(network, layerName, filepath);
+            string what = string.IsNullOrEmpty(layerName) ? $"Network '{network.Name}'" : $"Layer '{layerName}' in network '{network.Name}'";
+            return OperationResult.Ok($"{what} exported to 'graphml' format to file: {filepath}");
         }
 
         /// <summary>
@@ -289,6 +409,22 @@ namespace Threadle.Core.Utilities
                 return OperationResult.Fail("LayerNotOneMode", $"Layer '{layerName}' is not 1-mode.");
             FileSerializerGexf.Export(network, layerOneMode, filepath);
             return OperationResult.Ok($"Layer '{layerName}' in network '{network.Name}' exported to 'gexf' format to file: {filepath}");
+        }
+
+        /// <summary>
+        /// Public-facing method to export a network to Pajek .net format. Always exports the whole network — the
+        /// format has no concept of a single-layer subset. 2-mode layers are skipped, since Pajek .net has no
+        /// hyperedge concept; this is reported in the result message when it happens.
+        /// </summary>
+        /// <param name="network">The network to export to Pajek .net.</param>
+        /// <param name="filepath">The filepath to export to.</param>
+        /// <returns>An OperationResult informing how well it went.</returns>
+        private static OperationResult ExportNetworkToPajek(Network network, string filepath)
+        {
+            int skippedTwoMode = network.Layers.Values.OfType<ILayerTwoMode>().Count();
+            FileSerializerPajek.Export(network, filepath);
+            string note = skippedTwoMode > 0 ? $" ({skippedTwoMode} two-mode layer(s) skipped: Pajek .net has no hyperedge support)" : "";
+            return OperationResult.Ok($"Network '{network.Name}' exported to 'pajek' format to file: {filepath}{note}");
         }
 
 
@@ -416,6 +552,16 @@ namespace Threadle.Core.Utilities
 
 
         #region Methods (private)
+        /// <summary>
+        /// Creates a message suffix informing how many nodes were added to the Nodeset during an import.
+        /// </summary>
+        /// <param name="resolver">The <see cref="NodeIdResolver"/> used during the import.</param>
+        /// <returns>The message suffix (empty if no nodes were added).</returns>
+        private static string NodesAddedMessage(NodeIdResolver resolver)
+        {
+            return resolver.NbrNodesAdded > 0 ? $" ({resolver.NbrNodesAdded} new nodes added to nodeset)" : "";
+        }
+
         /// <summary>
         /// Internal method to save a Nodeset to filepath.
         /// The filepath format is derived from the filepath ending.
@@ -590,12 +736,12 @@ namespace Threadle.Core.Utilities
             }
         }
 
-        private static OperationResult<List<(string Name, NodeAttributeType Type, Dictionary<uint,string> Values)>> ParseNodeAttributeLines(string[] lines, char separator)
+        private static OperationResult<List<(string Name, NodeAttributeType Type, Dictionary<uint, string> Values)>> ParseNodeAttributeLines(string[] lines, char separator)
         {
             if (lines.Length == 0)
                 return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Fail("EmptyFile", "The file is empty.");
             string[] headerCells = lines[0].Split(separator);
-            if (headerCells.Length<2)
+            if (headerCells.Length < 2)
                 return OperationResult<List<(string, NodeAttributeType, Dictionary<uint, string>)>>.Fail(
             "InvalidHeader", "Header row must contain at least one attribute column after the nodeId column.");
             int nbrAttributes = headerCells.Length - 1;
